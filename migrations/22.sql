@@ -1,0 +1,1 @@
+ALTER TABLE user_wallets ADD COLUMN demo_balance TEXT DEFAULT '0';

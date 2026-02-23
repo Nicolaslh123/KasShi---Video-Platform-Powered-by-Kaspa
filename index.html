@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/api/static/kasshi-logo" />
+    <link rel="apple-touch-icon" href="/api/static/kasshi-logo" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    
+    <!-- PWA / iOS Support -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="KasShi" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="application-name" content="KasShi" />
+    <title>KasShi - Video Platform Powered by Kaspa</title>
+    <meta name="description" content="Watch, create, and earn with micropayments. Every view, like, and comment supports creators directly through Kaspa." />
+    
+    <!-- Open Graph / Social Media -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="KasShi - Video Platform Powered by Kaspa" />
+    <meta property="og:description" content="Watch, create, and earn with micropayments. Every view, like, and comment supports creators directly through Kaspa." />
+    <meta property="og:image" content="/api/static/kasshi-logo" />
+    <meta property="og:url" content="https://kasshi.io" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="KasShi - Video Platform Powered by Kaspa" />
+    <meta name="twitter:description" content="Watch, create, and earn with micropayments. Every view, like, and comment supports creators directly through Kaspa." />
+    <meta name="twitter:image" content="/api/static/kasshi-logo" />
+    
+    <!-- Theme Color -->
+    <meta name="theme-color" content="#020617" />
+    
+    <!-- Additional Trust Signals -->
+    <meta name="author" content="KasShi" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://kasshi.io" />
+    
+    <!-- Structured Data - Organization -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "KasShi",
+      "url": "https://kasshi.io",
+      "description": "Video platform powered by Kaspa cryptocurrency with micropayments",
+      "applicationCategory": "VideoApplication",
+      "operatingSystem": "Web Browser",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      },
+      "creator": {
+        "@type": "Organization",
+        "name": "KasShi",
+        "url": "https://kasshi.io",
+        "contactPoint": {
+          "@type": "ContactPoint",
+          "email": "support@kasshi.io",
+          "contactType": "customer support"
+        }
+      }
+    }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/react-app/main.tsx"></script>
+    <script>
+      // Register service worker for PWA
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+      }
+    </script>
+  </body>
+</html>

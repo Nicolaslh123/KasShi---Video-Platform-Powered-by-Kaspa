@@ -1,0 +1,1 @@
+ALTER TABLE user_wallets DROP COLUMN encrypted_mnemonic;

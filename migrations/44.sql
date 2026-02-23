@@ -1,0 +1,1 @@
+ALTER TABLE video_payments ADD COLUMN from_user_id TEXT;

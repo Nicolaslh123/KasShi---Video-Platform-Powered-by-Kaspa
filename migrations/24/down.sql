@@ -1,0 +1,2 @@
+ALTER TABLE user_wallets DROP COLUMN require_password_on_login;
+ALTER TABLE user_wallets DROP COLUMN encrypted_password_mnemonic;

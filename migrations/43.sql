@@ -1,0 +1,1 @@
+ALTER TABLE comment_interactions ADD COLUMN user_id TEXT;

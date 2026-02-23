@@ -1,0 +1,1 @@
+ALTER TABLE video_interactions ADD COLUMN user_id TEXT;

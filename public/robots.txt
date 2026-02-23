@@ -1,0 +1,9 @@
+# KasShi - Video Platform Powered by Kaspa
+# https://kasshi.io
+
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /settings
+
+Sitemap: https://kasshi.io/sitemap.xml

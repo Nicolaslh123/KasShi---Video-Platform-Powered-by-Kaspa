@@ -1,0 +1,1 @@
+ALTER TABLE video_payments DROP COLUMN from_user_id;

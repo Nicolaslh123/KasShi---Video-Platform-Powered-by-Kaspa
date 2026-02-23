@@ -1,0 +1,1 @@
+ALTER TABLE video_interactions DROP COLUMN user_id;

@@ -1,0 +1,2 @@
+
+ALTER TABLE videos ADD COLUMN is_private INTEGER DEFAULT 0;

@@ -1,0 +1,1 @@
+ALTER TABLE user_wallets ADD COLUMN encrypted_mnemonic TEXT;

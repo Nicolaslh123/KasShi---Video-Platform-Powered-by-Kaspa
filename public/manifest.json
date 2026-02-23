@@ -1,0 +1,43 @@
+{
+  "name": "KasShi - Video Platform Powered by Kaspa",
+  "short_name": "KasShi",
+  "description": "Watch, create, and earn with micropayments. Every view, like, and comment supports creators directly through Kaspa.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "orientation": "any",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/api/static/kasshi-logo",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/api/static/kasshi-logo",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["entertainment", "finance", "social"],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "Upload Video",
+      "short_name": "Upload",
+      "url": "/upload",
+      "icons": [{ "src": "/api/static/kasshi-logo", "sizes": "96x96" }]
+    },
+    {
+      "name": "My Wallet",
+      "short_name": "Wallet",
+      "url": "/wallet",
+      "icons": [{ "src": "/api/static/kasshi-logo", "sizes": "96x96" }]
+    }
+  ],
+  "related_applications": [],
+  "prefer_related_applications": false
+}

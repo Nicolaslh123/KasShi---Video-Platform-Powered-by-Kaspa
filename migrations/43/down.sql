@@ -1,0 +1,1 @@
+ALTER TABLE comment_interactions DROP COLUMN user_id;

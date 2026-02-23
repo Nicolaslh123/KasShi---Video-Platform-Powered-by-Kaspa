@@ -1,0 +1,3 @@
+DROP INDEX idx_external_wallet_users_token;
+DROP INDEX idx_external_wallet_users_address;
+DROP TABLE external_wallet_users;

@@ -1,0 +1,5 @@
+ALTER TABLE external_wallet_users DROP COLUMN demo_balance;
+ALTER TABLE external_wallet_users DROP COLUMN encrypted_internal_mnemonic;
+ALTER TABLE external_wallet_users DROP COLUMN encrypted_internal_private_key;
+ALTER TABLE external_wallet_users DROP COLUMN internal_public_key;
+ALTER TABLE external_wallet_users DROP COLUMN internal_wallet_address;

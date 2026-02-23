@@ -1,0 +1,1 @@
+ALTER TABLE videos ADD COLUMN public_id TEXT;
