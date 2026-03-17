@@ -1,0 +1,1 @@
+ALTER TABLE track_reviews DROP COLUMN retry_count;

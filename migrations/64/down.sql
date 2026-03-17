@@ -1,0 +1,1 @@
+ALTER TABLE podcast_episodes DROP COLUMN music_profile_id;

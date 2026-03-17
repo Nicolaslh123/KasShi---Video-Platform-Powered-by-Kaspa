@@ -1,0 +1,1 @@
+ALTER TABLE music_profiles ADD COLUMN profile_theme TEXT DEFAULT 'moonlight';

@@ -1,0 +1,1 @@
+ALTER TABLE playlists DROP COLUMN music_profile_id;

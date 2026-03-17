@@ -1,0 +1,1 @@
+ALTER TABLE user_settings ADD COLUMN notifications_comments BOOLEAN DEFAULT 1;

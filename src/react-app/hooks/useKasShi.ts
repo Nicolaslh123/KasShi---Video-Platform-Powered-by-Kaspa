@@ -37,6 +37,8 @@ function mapVideoFromApi(data: Record<string, unknown>): Video {
     status: data.status as string,
     isMembersOnly: Boolean(data.isMembersOnly ?? data.is_members_only),
     hasWatched: Boolean(data.hasWatched ?? data.has_watched),
+    priceKas: ((data.priceKas ?? data.price_kas) as string) || '0',
+    bunnyStatus: (data.bunnyStatus ?? data.bunny_status) as string | null,
     createdAt: (data.createdAt ?? data.created_at) as string,
     channel: {
       id: channelData.id as number,
@@ -83,6 +85,8 @@ export interface Video {
   status: string;
   isMembersOnly: boolean;
   hasWatched?: boolean;
+  priceKas: string;
+  bunnyStatus: string | null;
   createdAt: string;
   channel: {
     id: number;
@@ -187,7 +191,7 @@ export function useVideoFeed(limit = 20, offset = 0) {
 }
 
 // Feed types
-export type FeedType = "for-you" | "following" | "members" | "history";
+export type FeedType = "for-you" | "free" | "following" | "members" | "history";
 
 // Extended Video type with hasWatched indicator and history metadata
 export interface FeedVideo extends Video {

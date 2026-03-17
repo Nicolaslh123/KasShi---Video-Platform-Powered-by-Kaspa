@@ -9,7 +9,7 @@ interface KasShiLogoProps {
 // This avoids antivirus blocking mochausercontent.com CDN
 export const KasShiLogo: React.FC<KasShiLogoProps> = ({ size = 32, className = "" }) => (
   <img
-    src="/api/static/kasshi-logo"
+    src="/api/static/kasshi-logo?v=2"
     alt="KasShi"
     width={size}
     height={size}

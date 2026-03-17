@@ -1,9 +1,12 @@
 import { useState, useEffect } from "react";
-import { useSearchParams, Link } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
+import LocalizedLink from "../components/LocalizedLink";
 import { Search as SearchIcon, Users, Film, Loader2 } from "lucide-react";
 import Navbar from "../components/Navbar";
+import { useElectronTitleBar } from "../components/ElectronTitleBar";
 import VideoCard from "../components/VideoCard";
 import { useWallet } from "../contexts/WalletContext";
+import { useLanguage } from "../contexts/LanguageContext";
 
 interface Channel {
   id: number;
@@ -32,6 +35,8 @@ interface Video {
   status: string;
   createdAt: string;
   isMembersOnly: boolean;
+  priceKas: string;
+  bunnyStatus: string | null;
   channel: {
     id: number;
     name: string;
@@ -52,6 +57,8 @@ export default function Search() {
   const [isLoading, setIsLoading] = useState(false);
   const [progressMap, setProgressMap] = useState<Record<number, { progressSeconds: number; durationSeconds: number }>>({});
   const { channel: userChannel } = useWallet();
+  const { t } = useLanguage();
+  const { titleBarPadding } = useElectronTitleBar();
 
   // Fetch search results
   useEffect(() => {
@@ -109,7 +116,7 @@ export default function Search() {
   const totalResults = videos.length + channels.length;
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 flex flex-col">
+    <div className={`min-h-screen w-full bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 flex flex-col ${titleBarPadding}`}>
       <Navbar />
       
       <main className="pt-20 pb-12 px-4 max-w-7xl mx-auto">
@@ -118,14 +125,14 @@ export default function Search() {
           {query ? (
             <>
               <h1 className="text-2xl font-bold text-white mb-2">
-                Search results for "<span className="text-teal-400">{query}</span>"
+                {t.search?.searchResultsFor || 'Search results for'} "<span className="text-teal-400">{query}</span>"
               </h1>
               <p className="text-slate-400 text-sm">
-                {isLoading ? "Searching..." : `${totalResults} result${totalResults !== 1 ? "s" : ""} found`}
+                {isLoading ? (t.search?.searching || 'Searching...') : `${totalResults} ${totalResults !== 1 ? (t.search?.resultsFound || 'results found') : (t.search?.resultFound || 'result found')}`}
               </p>
             </>
           ) : (
-            <h1 className="text-2xl font-bold text-white">Search</h1>
+            <h1 className="text-2xl font-bold text-white">{t.common.search}</h1>
           )}
         </div>
 
@@ -140,7 +147,7 @@ export default function Search() {
             }`}
           >
             <SearchIcon className="w-4 h-4" />
-            All
+            {t.search?.all || 'All'}
           </button>
           <button
             onClick={() => setActiveTab("videos")}
@@ -151,7 +158,7 @@ export default function Search() {
             }`}
           >
             <Film className="w-4 h-4" />
-            Videos
+            {t.search?.videos || 'Videos'}
           </button>
           <button
             onClick={() => setActiveTab("channels")}
@@ -162,7 +169,7 @@ export default function Search() {
             }`}
           >
             <Users className="w-4 h-4" />
-            Channels
+            {t.search?.channels || 'Channels'}
           </button>
         </div>
 
@@ -177,8 +184,8 @@ export default function Search() {
         {!isLoading && query && totalResults === 0 && (
           <div className="text-center py-20">
             <SearchIcon className="w-16 h-16 text-slate-600 mx-auto mb-4" />
-            <h2 className="text-xl font-semibold text-white mb-2">No results found</h2>
-            <p className="text-slate-400">Try different keywords or check your spelling</p>
+            <h2 className="text-xl font-semibold text-white mb-2">{t.search?.noResultsFound || 'No results found'}</h2>
+            <p className="text-slate-400">{t.search?.tryDifferentKeywords || 'Try different keywords or check your spelling'}</p>
           </div>
         )}
 
@@ -186,8 +193,8 @@ export default function Search() {
         {!query && (
           <div className="text-center py-20">
             <SearchIcon className="w-16 h-16 text-slate-600 mx-auto mb-4" />
-            <h2 className="text-xl font-semibold text-white mb-2">Search KasShi</h2>
-            <p className="text-slate-400">Find videos and channels</p>
+            <h2 className="text-xl font-semibold text-white mb-2">{t.search?.searchKasshi || 'Search KasShi'}</h2>
+            <p className="text-slate-400">{t.search?.findVideosAndChannels || 'Find videos and channels'}</p>
           </div>
         )}
 
@@ -200,12 +207,12 @@ export default function Search() {
                 {activeTab === "all" && (
                   <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
                     <Users className="w-5 h-5 text-teal-400" />
-                    Channels
+                    {t.search?.channels || 'Channels'}
                   </h2>
                 )}
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                   {channels.map((ch) => (
-                    <Link
+                    <LocalizedLink
                       key={ch.id}
                       to={`/channel/${ch.handle}`}
                       className="flex items-center gap-4 p-4 bg-slate-800/50 hover:bg-slate-800 border border-slate-700/50 rounded-xl transition-colors"
@@ -219,10 +226,10 @@ export default function Search() {
                         <h3 className="font-semibold text-white truncate">{ch.name}</h3>
                         <p className="text-sm text-slate-400">@{ch.handle}</p>
                         <p className="text-sm text-slate-500">
-                          {formatSubscribers(ch.subscriberCount)} subscribers
+                          {formatSubscribers(ch.subscriberCount)} {t.search?.subscribers || 'subscribers'}
                         </p>
                       </div>
-                    </Link>
+                    </LocalizedLink>
                   ))}
                 </div>
               </section>
@@ -234,7 +241,7 @@ export default function Search() {
                 {activeTab === "all" && (
                   <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
                     <Film className="w-5 h-5 text-teal-400" />
-                    Videos
+                    {t.search?.videos || 'Videos'}
                   </h2>
                 )}
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

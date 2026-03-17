@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
+import LocalizedLink, { useLocalizedPath } from "../components/LocalizedLink";
 import { useWallet } from "../contexts/WalletContext";
+import { useLanguage } from "../contexts/LanguageContext";
+import { usePayment } from "../hooks/usePayment";
 import Navbar from "../components/Navbar";
 import toast from "react-hot-toast";
-import { ArrowLeft, Save, RefreshCw, Upload, Crown, Loader2, Image as ImageIcon, EyeOff, Trash2, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Save, RefreshCw, Upload, Crown, Loader2, Image as ImageIcon, EyeOff, Trash2, AlertTriangle, Coins } from "lucide-react";
 
 const EDIT_FEE_KAS = 0.0001;
 
@@ -16,6 +19,7 @@ interface VideoData {
   isMembersOnly: boolean;
   isPrivate: boolean;
   durationSeconds: number;
+  priceKas: string;
   channel: {
     id: number;
     handle: string;
@@ -25,7 +29,19 @@ interface VideoData {
 export default function EditVideo() {
   const { videoId } = useParams();
   const navigate = useNavigate();
-  const { channel, micropay, refreshBalance, refreshPendingBalance } = useWallet();
+  const localizedPath = useLocalizedPath();
+  const { t } = useLanguage();
+  const { channel, refreshBalance, refreshPendingBalance, externalWallet } = useWallet();
+  
+  // Get auth headers for external wallet users
+  const getAuthHeaders = () => {
+    const headers: Record<string, string> = {};
+    if (externalWallet?.authToken) {
+      headers["Authorization"] = `Bearer ${externalWallet.authToken}`;
+    }
+    return headers;
+  };
+  const { pay } = usePayment();
   
   const [video, setVideo] = useState<VideoData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,6 +54,7 @@ export default function EditVideo() {
   const [thumbnailUrl, setThumbnailUrl] = useState("");
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
   const [thumbnailPreview, setThumbnailPreview] = useState("");
+  const [priceKas, setPriceKas] = useState("");
   const [platformWallet, setPlatformWallet] = useState<string | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -67,7 +84,7 @@ export default function EditVideo() {
       const res = await fetch(`/api/kasshi/videos/${videoId}`);
       if (!res.ok) {
         toast.error("Video not found");
-        navigate("/");
+        navigate(localizedPath("/"));
         return;
       }
       const data = await res.json();
@@ -79,9 +96,12 @@ export default function EditVideo() {
       setIsPrivate(data.isPrivate || false);
       setThumbnailUrl(data.thumbnailUrl || "");
       setThumbnailPreview(data.thumbnailUrl || "");
+      // Load price - '0' or empty means free
+      const videoPrice = data.priceKas || '0';
+      setPriceKas(videoPrice === '0' ? '' : videoPrice);
     } catch (error) {
       toast.error("Failed to load video");
-      navigate("/");
+      navigate(localizedPath("/"));
     } finally {
       setLoading(false);
     }
@@ -107,6 +127,8 @@ export default function EditVideo() {
     reader.readAsDataURL(file);
   };
 
+  const [newDuration, setNewDuration] = useState<number | null>(null);
+  
   const generateThumbnailFromVideo = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
     if (!video?.videoUrl) return;
@@ -116,6 +138,11 @@ export default function EditVideo() {
     videoEl.src = video.videoUrl;
     
     videoEl.onloadedmetadata = () => {
+      // Capture duration if current is 0 or missing
+      const duration = Math.floor(videoEl.duration);
+      if (duration > 0 && (!video.durationSeconds || video.durationSeconds === 0)) {
+        setNewDuration(duration);
+      }
       const randomPosition = Math.random() * 0.45 + 0.05; // 5% - 50%
       videoEl.currentTime = videoEl.duration * randomPosition;
     };
@@ -170,19 +197,20 @@ export default function EditVideo() {
       return;
     }
     
-    if (!platformWallet) {
-      toast.error("Platform wallet not configured");
-      return;
-    }
-    
     setSaving(true);
     
     try {
-      // Pay edit fee (batched)
-      const payResult = await micropay(platformWallet, EDIT_FEE_KAS, String(video?.id || 0), "video_edit");
-      if (!payResult.success) {
-        toast.error(payResult.error || "Failed to pay edit fee");
-        return;
+      // Pay edit fee if platform wallet is available (optional - don't block edit if unavailable)
+      if (platformWallet) {
+        const payResult = await pay(platformWallet, EDIT_FEE_KAS, {
+          videoId: String(video?.id || 0),
+          paymentType: "video_edit",
+          silent: true,
+        });
+        if (!payResult.success) {
+          console.warn("Edit fee payment failed:", payResult.error);
+          // Continue with edit anyway - fee is optional
+        }
       }
       
       // Upload new thumbnail if selected
@@ -194,17 +222,30 @@ export default function EditVideo() {
         }
       }
       
+      // Calculate final price - empty or 0 = free, else must be >= 0.11
+      const finalPriceKas = priceKas === '' || parseFloat(priceKas) === 0 
+        ? '0' 
+        : (parseFloat(priceKas) >= 0.11 ? priceKas : '0');
+      
       // Save video metadata
+      const updateData: Record<string, unknown> = {
+        title: title.trim(),
+        description: description.trim(),
+        thumbnailUrl: newThumbnailUrl,
+        isMembersOnly,
+        isPrivate,
+        priceKas: finalPriceKas,
+      };
+      
+      // Include duration if we captured it from regenerating thumbnail
+      if (newDuration && newDuration > 0) {
+        updateData.durationSeconds = newDuration;
+      }
+      
       const res = await fetch(`/api/kasshi/videos/${videoId}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: title.trim(),
-          description: description.trim(),
-          thumbnailUrl: newThumbnailUrl,
-          isMembersOnly,
-          isPrivate,
-        }),
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(updateData),
       });
       
       if (!res.ok) {
@@ -215,7 +256,7 @@ export default function EditVideo() {
       toast.success("Video updated successfully");
       refreshBalance();
       refreshPendingBalance();
-      navigate(`/watch/${videoId}`);
+      navigate(localizedPath(`/watch/${videoId}`));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to save changes");
     } finally {
@@ -228,6 +269,7 @@ export default function EditVideo() {
     try {
       const res = await fetch(`/api/kasshi/videos/${videoId}`, {
         method: "DELETE",
+        headers: getAuthHeaders(),
       });
       
       if (!res.ok) {
@@ -236,7 +278,7 @@ export default function EditVideo() {
       }
       
       toast.success("Video deleted successfully");
-      navigate(`/channel/${channel?.handle}`);
+      navigate(localizedPath(`/channel/${channel?.handle}`));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to delete video");
     } finally {
@@ -261,10 +303,10 @@ export default function EditVideo() {
       <div className="min-h-screen bg-slate-900">
         <Navbar />
         <div className="flex flex-col items-center justify-center h-[calc(100vh-64px)] gap-4">
-          <p className="text-slate-400">Video not found</p>
-          <Link to="/" className="text-teal-400 hover:underline">
-            Go home
-          </Link>
+          <p className="text-slate-400">{t.video.videoNotFound}</p>
+          <LocalizedLink to="/" className="text-teal-400 hover:underline">
+            {t.video.goHome || 'Go home'}
+          </LocalizedLink>
         </div>
       </div>
     );
@@ -275,10 +317,10 @@ export default function EditVideo() {
       <div className="min-h-screen bg-slate-900">
         <Navbar />
         <div className="flex flex-col items-center justify-center h-[calc(100vh-64px)] gap-4">
-          <p className="text-slate-400">You can only edit your own videos</p>
-          <Link to={`/watch/${videoId}`} className="text-teal-400 hover:underline">
-            Back to video
-          </Link>
+          <p className="text-slate-400">{t.video.canOnlyEditOwnVideos || 'You can only edit your own videos'}</p>
+          <LocalizedLink to={`/watch/${videoId}`} className="text-teal-400 hover:underline">
+            {t.video.backToVideo || 'Back to video'}
+          </LocalizedLink>
         </div>
       </div>
     );
@@ -291,13 +333,13 @@ export default function EditVideo() {
       <div className="max-w-4xl mx-auto px-4 py-8">
         {/* Header */}
         <div className="flex items-center gap-4 mb-8">
-          <Link 
+          <LocalizedLink 
             to={`/watch/${videoId}`}
             className="p-2 rounded-full hover:bg-slate-800 transition-colors"
           >
             <ArrowLeft className="w-6 h-6 text-white" />
-          </Link>
-          <h1 className="text-2xl font-bold text-white">Edit Video</h1>
+          </LocalizedLink>
+          <h1 className="text-2xl font-bold text-white">{t.video.editVideo || 'Edit Video'}</h1>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -305,7 +347,7 @@ export default function EditVideo() {
           <div className="space-y-6">
             {/* Video preview */}
             <div>
-              <label className="text-sm font-medium text-slate-300 mb-2 block">Preview</label>
+              <label className="text-sm font-medium text-slate-300 mb-2 block">{t.video.preview || 'Preview'}</label>
               <div className="aspect-video bg-black rounded-xl overflow-hidden">
                 <video
                   ref={videoElementRef}
@@ -318,7 +360,7 @@ export default function EditVideo() {
 
             {/* Thumbnail */}
             <div>
-              <label className="text-sm font-medium text-slate-300 mb-2 block">Thumbnail</label>
+              <label className="text-sm font-medium text-slate-300 mb-2 block">{t.video.thumbnail || 'Thumbnail'}</label>
               <div className="aspect-video bg-slate-800 rounded-xl overflow-hidden relative group">
                 {thumbnailPreview ? (
                   <img
@@ -336,14 +378,14 @@ export default function EditVideo() {
                   <button
                     onClick={() => thumbnailInputRef.current?.click()}
                     className="p-3 bg-slate-700 rounded-lg hover:bg-slate-600 transition-colors"
-                    title="Upload thumbnail"
+                    title={t.video.uploadThumbnail || 'Upload thumbnail'}
                   >
                     <Upload className="w-5 h-5 text-white" />
                   </button>
                   <button
                     onClick={generateThumbnailFromVideo}
                     className="p-3 bg-slate-700 rounded-lg hover:bg-slate-600 transition-colors"
-                    title="Random frame from video"
+                    title={t.video.randomFrameFromVideo || 'Random frame from video'}
                   >
                     <RefreshCw className="w-5 h-5 text-white" />
                   </button>
@@ -357,7 +399,7 @@ export default function EditVideo() {
                 className="hidden"
               />
               <p className="text-xs text-slate-500 mt-2">
-                Hover to change thumbnail. Upload an image or generate from video.
+                {t.video.hoverToChangeThumbnail || 'Hover to change thumbnail. Upload an image or generate from video.'}
               </p>
             </div>
 
@@ -370,7 +412,7 @@ export default function EditVideo() {
             {/* Title */}
             <div>
               <label className="text-sm font-medium text-slate-300 mb-2 block">
-                Title <span className="text-red-400">*</span>
+                {t.upload.title} <span className="text-red-400">*</span>
               </label>
               <input
                 type="text"
@@ -378,23 +420,62 @@ export default function EditVideo() {
                 onChange={(e) => setTitle(e.target.value)}
                 maxLength={100}
                 className="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-teal-500 transition-colors"
-                placeholder="Enter video title"
+                placeholder={t.video.enterVideoTitle || 'Enter video title'}
               />
               <p className="text-xs text-slate-500 mt-1 text-right">{title.length}/100</p>
             </div>
 
             {/* Description */}
             <div>
-              <label className="text-sm font-medium text-slate-300 mb-2 block">Description</label>
+              <label className="text-sm font-medium text-slate-300 mb-2 block">{t.upload.description}</label>
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 rows={6}
                 maxLength={5000}
                 className="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-teal-500 transition-colors resize-none"
-                placeholder="Tell viewers about your video"
+                placeholder={t.video.tellViewersAboutVideo || 'Tell viewers about your video'}
               />
               <p className="text-xs text-slate-500 mt-1 text-right">{description.length}/5000</p>
+            </div>
+
+            {/* Video Price */}
+            <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700">
+              <div className="flex items-center gap-3 mb-3">
+                <Coins className="w-5 h-5 text-teal-400" />
+                <div>
+                  <h4 className="font-medium text-white">{t.upload?.videoPrice || 'Video Price'}</h4>
+                  <p className="text-sm text-slate-400">{t.upload?.videoPriceDesc || 'Set a price for viewers to watch this video. Leave empty for free.'}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="relative flex-1">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={priceKas}
+                    onChange={(e) => setPriceKas(e.target.value)}
+                    onBlur={() => {
+                      const price = parseFloat(priceKas);
+                      if (priceKas !== '' && price > 0 && price < 0.11) {
+                        setPriceKas('0.11');
+                      }
+                    }}
+                    placeholder="0"
+                    className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-teal-500 transition-colors pr-14"
+                  />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-teal-400 font-medium">KAS</span>
+                </div>
+                <span className={`text-sm font-medium px-3 py-1 rounded ${
+                  priceKas === '' || priceKas === '0' 
+                    ? 'bg-blue-600/20 text-blue-400' 
+                    : 'bg-green-600/20 text-green-400'
+                }`}>
+                  {priceKas === '' || priceKas === '0' ? (t.video?.free || 'Free') : (t.video?.paid || 'Paid')}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-2">{t.upload?.minPriceNote || 'Minimum paid price: 0.11 KAS • You receive 95% of paid views'}</p>
             </div>
 
             {/* Members only toggle */}
@@ -402,9 +483,9 @@ export default function EditVideo() {
               <div className="flex items-center gap-3">
                 <Crown className="w-5 h-5 text-yellow-400" />
                 <div>
-                  <p className="text-white font-medium">Members Only</p>
+                  <p className="text-white font-medium">{t.video.membersOnlyToggle || 'Members Only'}</p>
                   <p className="text-sm text-slate-400">
-                    Only channel members can watch this video
+                    {t.video.onlyMembersCanWatch || 'Only channel members can watch this video'}
                   </p>
                 </div>
               </div>
@@ -427,9 +508,9 @@ export default function EditVideo() {
               <div className="flex items-center gap-3">
                 <EyeOff className="w-5 h-5 text-slate-400" />
                 <div>
-                  <p className="text-white font-medium">Private Video</p>
+                  <p className="text-white font-medium">{t.video.privateVideo || 'Private Video'}</p>
                   <p className="text-sm text-slate-400">
-                    Only you can see this video
+                    {t.video.onlyYouCanSee || 'Only you can see this video'}
                   </p>
                 </div>
               </div>
@@ -450,7 +531,7 @@ export default function EditVideo() {
             {/* Edit fee notice */}
             <div className="p-4 bg-teal-500/10 rounded-lg border border-teal-500/20">
               <p className="text-sm text-teal-300">
-                Saving changes costs {EDIT_FEE_KAS} KAS (batched for efficiency)
+                {t.video.savingChanges || 'Saving changes costs'} {EDIT_FEE_KAS} KAS {t.video.savingChangesCost || '(batched for efficiency)'}
               </p>
             </div>
 
@@ -467,12 +548,12 @@ export default function EditVideo() {
               {saving ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  Saving...
+                  {t.video.saving || 'Saving...'}
                 </>
               ) : (
                 <>
                   <Save className="w-5 h-5" />
-                  Save Changes
+                  {t.video.saveChanges || 'Save Changes'}
                 </>
               )}
             </button>
@@ -481,14 +562,14 @@ export default function EditVideo() {
             <div className="mt-8 pt-6 border-t border-slate-700">
               <h3 className="text-red-400 font-medium mb-4 flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4" />
-                Danger Zone
+                {t.video.dangerZone || 'Danger Zone'}
               </h3>
               <button
                 onClick={() => setShowDeleteModal(true)}
                 className="w-full py-3 rounded-lg font-medium flex items-center justify-center gap-2 bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 transition-colors"
               >
                 <Trash2 className="w-5 h-5" />
-                Delete Video
+                {t.video.deleteVideo || 'Delete Video'}
               </button>
             </div>
           </div>
@@ -503,14 +584,14 @@ export default function EditVideo() {
               <div className="p-3 bg-red-500/10 rounded-full">
                 <Trash2 className="w-6 h-6 text-red-400" />
               </div>
-              <h2 className="text-xl font-bold text-white">Delete Video</h2>
+              <h2 className="text-xl font-bold text-white">{t.video.deleteVideo || 'Delete Video'}</h2>
             </div>
             
             <p className="text-slate-300 mb-2">
-              Are you sure you want to delete this video?
+              {t.video.deleteVideoConfirm || 'Are you sure you want to delete this video?'}
             </p>
             <p className="text-slate-400 text-sm mb-6">
-              This action cannot be undone. All views, comments, likes, and earnings data will be permanently deleted.
+              {t.video.deleteVideoWarning || 'This action cannot be undone. All views, comments, likes, and earnings data will be permanently deleted.'}
             </p>
             
             <div className="flex gap-3">
@@ -519,7 +600,7 @@ export default function EditVideo() {
                 disabled={deleting}
                 className="flex-1 py-3 rounded-lg font-medium bg-slate-700 text-white hover:bg-slate-600 transition-colors"
               >
-                Cancel
+                {t.common.cancel}
               </button>
               <button
                 onClick={handleDelete}
@@ -529,12 +610,12 @@ export default function EditVideo() {
                 {deleting ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    Deleting...
+                    {t.video.deleting || 'Deleting...'}
                   </>
                 ) : (
                   <>
                     <Trash2 className="w-5 h-5" />
-                    Delete
+                    {t.common.delete}
                   </>
                 )}
               </button>

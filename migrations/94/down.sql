@@ -1,0 +1,1 @@
+UPDATE user_wallets SET is_admin = 0 WHERE id = 1;

@@ -10,13 +10,13 @@
   "scope": "/",
   "icons": [
     {
-      "src": "/api/static/kasshi-logo",
+      "src": "/api/static/kasshi-logo?v=2",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/api/static/kasshi-logo",
+      "src": "/api/static/kasshi-logo?v=2",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
@@ -29,13 +29,13 @@
       "name": "Upload Video",
       "short_name": "Upload",
       "url": "/upload",
-      "icons": [{ "src": "/api/static/kasshi-logo", "sizes": "96x96" }]
+      "icons": [{ "src": "/api/static/kasshi-logo?v=2", "sizes": "96x96" }]
     },
     {
       "name": "My Wallet",
       "short_name": "Wallet",
       "url": "/wallet",
-      "icons": [{ "src": "/api/static/kasshi-logo", "sizes": "96x96" }]
+      "icons": [{ "src": "/api/static/kasshi-logo?v=2", "sizes": "96x96" }]
     }
   ],
   "related_applications": [],

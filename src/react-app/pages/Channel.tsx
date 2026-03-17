@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams } from "react-router-dom";
+import LocalizedLink from "../components/LocalizedLink";
 import Navbar from "../components/Navbar";
+import { useElectronTitleBar } from "../components/ElectronTitleBar";
 import VideoCard from "../components/VideoCard";
 import { WalletModal } from "../components/WalletModal";
 import { SecurityVerificationModal } from "../components/SecurityVerificationModal";
@@ -17,7 +19,8 @@ import {
 } from "../hooks/useKasShi";
 import { useWallet } from "../contexts/WalletContext";
 import { usePayment } from "../hooks/usePayment";
-import { Share2, Bell, Loader2, Gift, X, Crown, Star, Sparkles, Plus, Check, Settings, Save, ImageIcon, Upload, ChevronDown, ChevronUp, Link2, ExternalLink, Trash2, Heart, Video, EyeOff, Pencil } from "lucide-react";
+import { useLanguage } from "../contexts/LanguageContext";
+import { Share2, Bell, Loader2, Gift, X, Crown, Star, Sparkles, Plus, Check, Settings, Save, ImageIcon, Upload, ChevronDown, ChevronUp, Link2, ExternalLink, Trash2, Heart, Video, EyeOff, Pencil, Music } from "lucide-react";
 import toast from "react-hot-toast";
 import { KaspaIcon } from "../components/KasShiLogo";
 
@@ -68,6 +71,8 @@ function MembershipStatusCard({
 
 export default function Channel() {
   const { channelId } = useParams();
+  const { t } = useLanguage();
+  const { titleBarPadding } = useElectronTitleBar();
   const { channel, loading: channelLoading, refetch: refetchChannel } = useChannel(channelId);
   const { videos, loading: videosLoading } = useChannelVideos(channelId);
   const { tiers, loading: tiersLoading, refetch: refetchTiers } = useChannelTiers(channelId);
@@ -133,6 +138,10 @@ export default function Channel() {
   const [editBannerUrl, setEditBannerUrl] = useState("");
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   
+  // Copy from music profile state
+  const [musicProfileExists, setMusicProfileExists] = useState(false);
+  const [copyingFromMusic, setCopyingFromMusic] = useState(false);
+  
   // Subscription state
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [isSubscribing, setIsSubscribing] = useState(false);
@@ -161,7 +170,7 @@ export default function Channel() {
   // Fee constants - external wallets need 0.1 KAS minimum (KIP-9), internal wallets batch small amounts
   const MIN_ONCHAIN_FEE = 0.1; // Minimum for KIP-9 compliance
   const EDIT_FEE_KAS = isExternalWallet ? MIN_ONCHAIN_FEE : 0.0001; // External: on-chain, Internal: batched
-  const SUBSCRIBE_FEE_KAS = 0.5; // 100% to creator (always on-chain, already >= 0.1)
+  const SUBSCRIBE_FEE_KAS = 1; // 100% to creator (always on-chain, already >= 0.1)
   const UNSUBSCRIBE_FEE_KAS = isExternalWallet ? MIN_ONCHAIN_FEE : 0.0001; // External: on-chain, Internal: batched
   
   // Platform wallet for fees (fetched dynamically)
@@ -549,6 +558,71 @@ export default function Channel() {
     }
   };
 
+  // Check if music profile exists for copy feature
+  const checkMusicProfile = async () => {
+    try {
+      const headers: Record<string, string> = {};
+      if (externalWallet?.authToken) {
+        headers["Authorization"] = `Bearer ${externalWallet.authToken}`;
+      }
+      const res = await fetch("/api/kasshi/copy-from-music", {
+        method: "GET",
+        headers,
+        credentials: "include",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setMusicProfileExists(data.exists);
+      }
+    } catch (err) {
+      console.error("Failed to check music profile:", err);
+    }
+  };
+
+  // Copy music profile data to video channel
+  const handleCopyFromMusic = async () => {
+    setCopyingFromMusic(true);
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (externalWallet?.authToken) {
+        headers["Authorization"] = `Bearer ${externalWallet.authToken}`;
+      }
+      const res = await fetch("/api/kasshi/copy-from-music", {
+        method: "POST",
+        headers,
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to copy profile");
+      }
+      const data = await res.json();
+      // Populate edit fields with copied data
+      if (data.name) setEditName(data.name);
+      if (data.handle) setEditHandle(data.handle);
+      if (data.description) setEditDescription(data.description);
+      if (data.avatarUrl) setEditAvatarUrl(data.avatarUrl);
+      if (data.bannerUrl) setEditBannerUrl(data.bannerUrl);
+      
+      // Refresh channel data to show updated profile
+      refetchChannel();
+      
+      toast.success("Profile copied from music! Review and save changes.");
+    } catch (err) {
+      console.error("Copy from music failed:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to copy profile");
+    } finally {
+      setCopyingFromMusic(false);
+    }
+  };
+
+  // Check for music profile when edit section opens
+  useEffect(() => {
+    if (showEditSection && isChannelOwner) {
+      checkMusicProfile();
+    }
+  }, [showEditSection, isChannelOwner]);
+
   const handleTip = async () => {
     const amount = parseFloat(tipAmount);
     if (isNaN(amount) || amount <= 0) {
@@ -747,7 +821,7 @@ export default function Channel() {
 
   if (channelLoading) {
     return (
-      <div className="min-h-screen w-full bg-slate-950 flex flex-col">
+      <div className={`min-h-screen w-full bg-slate-950 flex flex-col ${titleBarPadding}`}>
         <Navbar />
         <div className="flex items-center justify-center pt-40">
           <Loader2 className="w-8 h-8 text-teal-400 animate-spin" />
@@ -758,14 +832,14 @@ export default function Channel() {
 
   if (!channel) {
     return (
-      <div className="min-h-screen w-full bg-slate-950 flex flex-col">
+      <div className={`min-h-screen w-full bg-slate-950 flex flex-col ${titleBarPadding}`}>
         <Navbar />
         <div className="flex flex-col items-center justify-center pt-40">
-          <h1 className="text-2xl font-bold text-white mb-2">Channel not found</h1>
-          <p className="text-slate-400 mb-6">This channel may have been removed or doesn't exist.</p>
-          <Link to="/" className="px-6 py-2 bg-teal-500 hover:bg-teal-400 text-white rounded-full font-medium transition-colors">
-            Back to Home
-          </Link>
+          <h1 className="text-2xl font-bold text-white mb-2">{t.channel.noVideos}</h1>
+          <p className="text-slate-400 mb-6">{t.common.error}</p>
+          <LocalizedLink to="/" className="px-6 py-2 bg-teal-500 hover:bg-teal-400 text-white rounded-full font-medium transition-colors">
+            {t.common.back}
+          </LocalizedLink>
         </div>
       </div>
     );
@@ -777,7 +851,7 @@ export default function Channel() {
     : "kaspa:qr49...7mxk";
 
   return (
-    <div className="min-h-screen w-full bg-slate-950 flex flex-col">
+    <div className={`min-h-screen w-full bg-slate-950 flex flex-col ${titleBarPadding}`}>
       <Navbar />
       
       <main className="pt-16">
@@ -820,22 +894,22 @@ export default function Channel() {
               <p className="text-slate-400 mt-1">@{channel.handle}</p>
               
               <div className="flex flex-wrap items-center gap-4 mt-3 text-sm text-slate-400">
-                <span>{channel.subscriberCount.toLocaleString()} subscribers</span>
+                <span>{channel.subscriberCount.toLocaleString()} {t.channel.subscribers}</span>
                 <span>•</span>
-                <span>{channel.videoCount || videos.length} videos</span>
+                <span>{channel.videoCount || videos.length} {t.channel.videos.toLowerCase()}</span>
                 {isChannelOwner && (
                   <>
                     <span>•</span>
                     <span className="flex items-center gap-1 text-teal-400">
                       <KaspaIcon size={16} />
-                      {formatKas(channel.totalKasEarned)} KAS earned total
+                      {formatKas(channel.totalKasEarned)} {t.channel?.kasEarnedTotal || 'KAS earned total'}
                     </span>
                   </>
                 )}
               </div>
 
               <p className="text-slate-300 mt-4 max-w-2xl text-sm leading-relaxed">
-                {channel.description || "This creator hasn't added a description yet."}
+                {channel.description || t.channel.creatorNoDescription}
               </p>
 
               <div className="flex items-center gap-3 mt-6">
@@ -855,10 +929,10 @@ export default function Channel() {
                       ) : isSubscribed ? (
                         <>
                           <Check className="w-4 h-4" />
-                          Subscribed
+                          {t.video.subscribed}
                         </>
                       ) : (
-                        `Subscribe · ${SUBSCRIBE_FEE_KAS} KAS`
+                        `${t.video.subscribe} · ${SUBSCRIBE_FEE_KAS} KAS`
                       )}
                     </button>
                     <button 
@@ -866,7 +940,7 @@ export default function Channel() {
                       className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 rounded-full text-white font-semibold transition-all shadow-lg shadow-amber-500/20 hover:shadow-amber-500/30"
                     >
                       <Gift className="w-5 h-5" />
-                      Tip
+                      {t.video.tip}
                     </button>
                     <button 
                       onClick={handleToggleNotifications}
@@ -876,7 +950,7 @@ export default function Channel() {
                           ? "bg-teal-600 hover:bg-teal-500" 
                           : "bg-slate-800 hover:bg-slate-700"
                       }`}
-                      title={notificationsEnabled ? "Notifications enabled" : "Get notified of new uploads"}
+                      title={notificationsEnabled ? t.channel.notificationsEnabled : t.channel.getNotified}
                     >
                       {togglingNotifications ? (
                         <Loader2 className="w-5 h-5 animate-spin" />
@@ -893,7 +967,7 @@ export default function Channel() {
                   <button 
                     onClick={() => setShowLinksModal(true)}
                     className="p-2.5 bg-slate-800 hover:bg-slate-700 rounded-full text-white transition-colors"
-                    title="Channel links"
+                    title={t.channel.links}
                   >
                     <Link2 className="w-5 h-5" />
                   </button>
@@ -911,13 +985,13 @@ export default function Channel() {
                         onClick={() => {
                           const url = `${window.location.origin}/channel/${channel?.handle}`;
                           navigator.clipboard.writeText(url);
-                          toast.success("Link copied to clipboard!");
+                          toast.success(t.channel.linkCopied || 'Link copied!');
                           setShowShareMenu(false);
                         }}
                         className="w-full px-4 py-3 text-left text-sm text-white hover:bg-slate-700 flex items-center gap-3"
                       >
                         <Link2 className="w-4 h-4" />
-                        Copy link
+                        {t.video.share}
                       </button>
                       <button
                         onClick={() => {
@@ -931,7 +1005,7 @@ export default function Channel() {
                         <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
                           <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
                         </svg>
-                        Share on X
+                        {t.video.share} X
                       </button>
                       <button
                         onClick={() => {
@@ -942,9 +1016,9 @@ export default function Channel() {
                         className="w-full px-4 py-3 text-left text-sm text-white hover:bg-slate-700 flex items-center gap-3"
                       >
                         <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                          <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+                          <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 18.062z"/>
                         </svg>
-                        Share on Facebook
+                        {t.video.share} Facebook
                       </button>
                     </div>
                   )}
@@ -956,7 +1030,7 @@ export default function Channel() {
             {isChannelOwner && (
             <div className="md:self-end flex flex-col gap-3">
               <div className="p-4 bg-slate-800/80 backdrop-blur-sm rounded-xl border border-slate-700">
-                <p className="text-xs text-slate-400 mb-1">Your Wallet</p>
+                <p className="text-xs text-slate-400 mb-1">{t.channel.yourWallet}</p>
                 <div className="flex items-center gap-2">
                   <KaspaIcon size={20} />
                   <code className="text-sm text-teal-400 font-mono">
@@ -971,7 +1045,7 @@ export default function Channel() {
                 className="flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-slate-300 font-medium transition-colors border border-slate-700"
               >
                 <Settings className="w-4 h-4" />
-                Edit Channel
+                {t.channel.editChannel}
                 {showEditSection ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
               </button>
             </div>
@@ -984,7 +1058,7 @@ export default function Channel() {
             <div className="mt-6 bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
               <div className="flex items-center gap-3 mb-6">
                 <Settings className="w-5 h-5 text-teal-400" />
-                <h3 className="text-lg font-semibold text-white">Edit Channel</h3>
+                <h3 className="text-lg font-semibold text-white">{t.channel.editChannel}</h3>
               </div>
               
               <div className="grid md:grid-cols-2 gap-6">
@@ -992,19 +1066,19 @@ export default function Channel() {
                 <div className="space-y-4">
                   {/* Channel Name */}
                   <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">Channel Name</label>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">{t.channel.channelName}</label>
                     <input
                       type="text"
                       value={editName}
                       onChange={(e) => setEditName(e.target.value)}
-                      placeholder="Your channel name"
+                      placeholder={t.channel.yourChannelName}
                       className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                     />
                   </div>
 
                   {/* Channel Handle */}
                   <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">Handle</label>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">{t.channel.handle}</label>
                     <div className="relative">
                       <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">@</span>
                       <input
@@ -1015,33 +1089,33 @@ export default function Channel() {
                         className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-8 pr-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                       />
                     </div>
-                    <p className="text-xs text-slate-500 mt-1">Letters, numbers, and underscores only</p>
+                    <p className="text-xs text-slate-500 mt-1">{t.channel.handleDesc}</p>
                   </div>
 
                   {/* Channel Description */}
                   <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">Description</label>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">{t.channel.description}</label>
                     <input
                       type="text"
                       value={editDescription}
                       onChange={(e) => setEditDescription(e.target.value)}
-                      placeholder="A short description for your channel"
+                      placeholder={t.channel.creatorNoDescription?.replace("This creator hasn't added a description yet.", "A short description for your channel") || "A short description for your channel"}
                       className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
                     />
-                    <p className="text-xs text-slate-500 mt-1">Shown below your subscriber count</p>
+                    <p className="text-xs text-slate-500 mt-1">{t.channel.descriptionHint}</p>
                   </div>
 
                   {/* About Section */}
                   <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-2">About</label>
+                    <label className="block text-sm font-medium text-slate-300 mb-2">{t.channel.aboutSection}</label>
                     <textarea
                       value={editAbout}
                       onChange={(e) => setEditAbout(e.target.value)}
-                      placeholder="Tell viewers more about yourself and your content..."
+                      placeholder={t.upload.description}
                       rows={5}
                       className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent resize-none"
                     />
-                    <p className="text-xs text-slate-500 mt-1">Shown in the About tab</p>
+                    <p className="text-xs text-slate-500 mt-1">{t.channel.aboutHint}</p>
                   </div>
                 </div>
 
@@ -1052,7 +1126,7 @@ export default function Channel() {
                     <label className="block text-sm font-medium text-slate-300 mb-2">
                       <div className="flex items-center gap-2">
                         <ImageIcon className="w-4 h-4" />
-                        Avatar
+                        {t.channel.avatar}
                       </div>
                     </label>
                     <div className="flex items-center gap-4">
@@ -1070,7 +1144,7 @@ export default function Channel() {
                             <Upload className="w-5 h-5 text-slate-400" />
                           )}
                           <span className="text-sm text-slate-300">
-                            {uploadingAvatar ? "Uploading..." : "Upload Avatar"}
+                            {uploadingAvatar ? t.channel.uploading : t.channel.uploadAvatar}
                           </span>
                         </div>
                         <input
@@ -1085,7 +1159,7 @@ export default function Channel() {
                         />
                       </label>
                     </div>
-                    <p className="text-xs text-slate-500 mt-2">PNG, JPG, or WebP. Max 5MB.</p>
+                    <p className="text-xs text-slate-500 mt-2">{t.channel.avatarHint}</p>
                   </div>
 
                   {/* Banner Upload */}
@@ -1093,7 +1167,7 @@ export default function Channel() {
                     <label className="block text-sm font-medium text-slate-300 mb-2">
                       <div className="flex items-center gap-2">
                         <ImageIcon className="w-4 h-4" />
-                        Banner
+                        {t.channel.banner}
                       </div>
                     </label>
                     <div className="space-y-3">
@@ -1112,7 +1186,7 @@ export default function Channel() {
                             <Upload className="w-5 h-5 text-slate-400" />
                           )}
                           <span className="text-sm text-slate-300">
-                            {uploadingBanner ? "Uploading..." : "Upload Banner"}
+                            {uploadingBanner ? t.channel.uploading : t.channel.uploadBanner}
                           </span>
                         </div>
                         <input
@@ -1127,7 +1201,7 @@ export default function Channel() {
                         />
                       </label>
                     </div>
-                    <p className="text-xs text-slate-500 mt-2">PNG, JPG, or WebP. Max 10MB. Recommended 1920x400.</p>
+                    <p className="text-xs text-slate-500 mt-2">{t.channel.bannerHint}</p>
                   </div>
                 </div>
               </div>
@@ -1136,9 +1210,9 @@ export default function Channel() {
               <div className="mt-6 pt-6 border-t border-slate-700">
                 <div className="flex items-center gap-2 mb-4">
                   <Link2 className="w-5 h-5 text-teal-400" />
-                  <h4 className="text-md font-semibold text-white">Channel Links</h4>
+                  <h4 className="text-md font-semibold text-white">{t.channel.channelLinks}</h4>
                 </div>
-                <p className="text-sm text-slate-400 mb-4">Add links to your social media, website, or other platforms.</p>
+                <p className="text-sm text-slate-400 mb-4">{t.channel.linksDesc}</p>
 
                 {/* Existing Links */}
                 {channelLinks.length > 0 && (
@@ -1172,7 +1246,7 @@ export default function Channel() {
                 {/* Add New Link */}
                 <div className="grid grid-cols-1 md:grid-cols-[1fr,1.5fr,auto] gap-3 items-end">
                   <div>
-                    <label className="block text-xs text-slate-400 mb-1.5">Title</label>
+                    <label className="block text-xs text-slate-400 mb-1.5">{t.channel.linkTitle}</label>
                     <input
                       type="text"
                       value={newLinkTitle}
@@ -1182,7 +1256,7 @@ export default function Channel() {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs text-slate-400 mb-1.5">URL</label>
+                    <label className="block text-xs text-slate-400 mb-1.5">{t.channel.linkUrl}</label>
                     <input
                       type="url"
                       value={newLinkUrl}
@@ -1201,12 +1275,38 @@ export default function Channel() {
                     ) : (
                       <>
                         <Plus className="w-4 h-4" />
-                        Add
+                        {t.channel.addLink}
                       </>
                     )}
                   </button>
                 </div>
               </div>
+
+              {/* Copy from Music Profile Button */}
+              {musicProfileExists && (
+                <div className="mt-6 pt-4 border-t border-slate-700">
+                  <button
+                    onClick={handleCopyFromMusic}
+                    disabled={copyingFromMusic}
+                    className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-500 hover:to-pink-400 disabled:from-slate-600 disabled:to-slate-600 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-xl transition-all duration-200"
+                  >
+                    {copyingFromMusic ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        {t.common.loading}
+                      </>
+                    ) : (
+                      <>
+                        <Music className="w-5 h-5" />
+                        Copy Music Profile
+                      </>
+                    )}
+                  </button>
+                  <p className="text-center text-xs text-slate-500 mt-2">
+                    Import your name, handle, avatar, and banner from your music profile
+                  </p>
+                </div>
+              )}
 
               {/* Save Button */}
               <div className="mt-6 pt-4 border-t border-slate-700">
@@ -1218,17 +1318,17 @@ export default function Channel() {
                   {isSavingEdit ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      Saving...
+                      {t.common.loading}
                     </>
                   ) : (
                     <>
                       <Save className="w-5 h-5" />
-                      Save Changes
+                      {t.common.save}
                     </>
                   )}
                 </button>
                 {parseFloat(balance ?? "0") < EDIT_FEE_KAS && (
-                  <p className="text-center text-sm text-red-400 mt-2">Insufficient balance</p>
+                  <p className="text-center text-sm text-red-400 mt-2">{t.common.error}</p>
                 )}
               </div>
             </div>
@@ -1244,7 +1344,7 @@ export default function Channel() {
                   : "text-slate-400 hover:text-white border-transparent"
               }`}
             >
-              Videos
+              {t.channel.videos}
             </button>
             <button 
               onClick={() => setActiveTab("membership")}
@@ -1255,7 +1355,7 @@ export default function Channel() {
               }`}
             >
               <Crown className="w-4 h-4" />
-              Membership
+              {t.channel.membership}
             </button>
             <button 
               onClick={() => setActiveTab("about")}
@@ -1265,7 +1365,7 @@ export default function Channel() {
                   : "text-slate-400 hover:text-white border-transparent"
               }`}
             >
-              About
+              {t.channel.about}
             </button>
             {isChannelOwner && (
               <>
@@ -1278,7 +1378,7 @@ export default function Channel() {
                   }`}
                 >
                   <Video className="w-4 h-4" />
-                  My Videos
+                  {t.channel?.myVideos || 'My Videos'}
                 </button>
                 <button 
                   onClick={() => setActiveTab("liked")}
@@ -1289,7 +1389,7 @@ export default function Channel() {
                   }`}
                 >
                   <Heart className="w-4 h-4" />
-                  Liked
+                  {t.channel?.liked || 'Liked'}
                 </button>
               </>
             )}
@@ -1328,8 +1428,8 @@ export default function Channel() {
                     <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-teal-500/20 to-cyan-500/20 flex items-center justify-center border border-teal-500/30">
                       <span className="text-3xl">🎬</span>
                     </div>
-                    <h3 className="text-lg font-semibold text-white mb-2">No videos yet</h3>
-                    <p className="text-slate-400">This creator hasn't uploaded any videos yet.</p>
+                    <h3 className="text-lg font-semibold text-white mb-2">{t.channel.noVideos}</h3>
+                    <p className="text-slate-400">{t.channel.noVideos}</p>
                   </div>
                 )}
               </>
@@ -1345,7 +1445,7 @@ export default function Channel() {
                 ) : myVideos.length > 0 ? (
                   <div className="space-y-4">
                     <p className="text-sm text-slate-400 mb-6">
-                      Manage all your videos including private and processing ones
+                      {t.channel.manageVideos || 'Manage all your videos including private and processing ones'}
                     </p>
                     <div className="grid grid-cols-1 gap-4">
                       {myVideos.map((video) => (
@@ -1354,7 +1454,7 @@ export default function Channel() {
                           className="flex items-center gap-4 p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 hover:border-slate-600 transition-all"
                         >
                           {/* Thumbnail */}
-                          <Link 
+                          <LocalizedLink 
                             to={`/watch/${video.publicId || video.id}`}
                             className="relative flex-shrink-0 w-40 aspect-video rounded-lg overflow-hidden bg-slate-700"
                           >
@@ -1369,38 +1469,38 @@ export default function Channel() {
                                 <Video className="w-8 h-8 text-slate-500" />
                               </div>
                             )}
-                          </Link>
+                          </LocalizedLink>
 
                           {/* Info */}
                           <div className="flex-1 min-w-0">
-                            <Link 
+                            <LocalizedLink 
                               to={`/watch/${video.publicId || video.id}`}
                               className="text-white font-medium hover:text-teal-400 transition-colors line-clamp-1"
                             >
                               {video.title}
-                            </Link>
+                            </LocalizedLink>
                             <div className="flex items-center gap-3 mt-1 text-sm text-slate-400">
-                              <span>{video.viewCount?.toLocaleString() || 0} views</span>
+                              <span>{video.viewCount?.toLocaleString() || 0} {t.video.views}</span>
                               <span>•</span>
-                              <span>{video.likeCount || 0} likes</span>
+                              <span>{video.likeCount || 0} {t.video.likes}</span>
                             </div>
                             <div className="flex items-center gap-2 mt-2">
                               {video.isPrivate && (
                                 <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-slate-700 text-slate-300 rounded-full">
                                   <EyeOff className="w-3 h-3" />
-                                  Private
+                                  {t.video.private || 'Private'}
                                 </span>
                               )}
                               {video.isMembersOnly && (
                                 <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-amber-500/20 text-amber-400 rounded-full">
                                   <Crown className="w-3 h-3" />
-                                  Members Only
+                                  {t.video.membersOnly || 'Members Only'}
                                 </span>
                               )}
                               {video.status === 'processing' && (
                                 <span className="flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-500/20 text-blue-400 rounded-full">
                                   <Loader2 className="w-3 h-3 animate-spin" />
-                                  Processing
+                                  {t.channel.processing || 'Processing'}
                                 </span>
                               )}
                             </div>
@@ -1408,13 +1508,13 @@ export default function Channel() {
 
                           {/* Actions */}
                           <div className="flex items-center gap-2">
-                            <Link
+                            <LocalizedLink
                               to={`/edit/${video.publicId || video.id}`}
                               className="p-2 text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
-                              title="Edit video"
+                              title={t.video.edit}
                             >
                               <Pencil className="w-4 h-4" />
-                            </Link>
+                            </LocalizedLink>
                           </div>
                         </div>
                       ))}
@@ -1425,15 +1525,15 @@ export default function Channel() {
                     <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-teal-500/20 to-cyan-500/20 flex items-center justify-center border border-teal-500/30">
                       <Video className="w-8 h-8 text-teal-400" />
                     </div>
-                    <h3 className="text-lg font-semibold text-white mb-2">No videos yet</h3>
-                    <p className="text-slate-400 mb-4">Upload your first video to get started.</p>
-                    <Link
+                    <h3 className="text-lg font-semibold text-white mb-2">{t.channel.noVideos}</h3>
+                    <p className="text-slate-400 mb-4">{t.upload.uploadVideo}</p>
+                    <LocalizedLink
                       to="/upload"
                       className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 rounded-xl text-white font-semibold transition-all"
                     >
                       <Plus className="w-5 h-5" />
-                      Upload Video
-                    </Link>
+                      {t.upload.uploadVideo}
+                    </LocalizedLink>
                   </div>
                 )}
               </>
@@ -1464,7 +1564,7 @@ export default function Channel() {
                       className="flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 rounded-xl text-white font-semibold transition-all"
                     >
                       <Plus className="w-5 h-5" />
-                      Create Membership Tier
+                      {t.channel.createMembershipTier}
                     </button>
                   </div>
                 )}
@@ -1495,7 +1595,7 @@ export default function Channel() {
                           {isCurrentTier && (
                             <div className="absolute top-3 right-3 px-3 py-1 bg-green-500/20 border border-green-500/30 rounded-full">
                               <span className="text-xs font-medium text-green-400 flex items-center gap-1">
-                                <Check className="w-3 h-3" /> Active
+                                <Check className="w-3 h-3" /> {t.channel.active}
                               </span>
                             </div>
                           )}
@@ -1506,7 +1606,7 @@ export default function Channel() {
                             </div>
                             <div>
                               <h3 className="text-lg font-bold text-white">{tier.name}</h3>
-                              <p className="text-sm text-slate-400">{tier.durationDays} days</p>
+                              <p className="text-sm text-slate-400">{tier.durationDays} {t.time.days || 'days'}</p>
                             </div>
                           </div>
                           
@@ -1531,7 +1631,7 @@ export default function Channel() {
                           )}
                           
                           {tier.memberCount !== undefined && (
-                            <p className="text-xs text-slate-500 mb-4">{tier.memberCount} members</p>
+                            <p className="text-xs text-slate-500 mb-4">{tier.memberCount} {t.channel.members || 'members'}</p>
                           )}
                           
                           {!isChannelOwner && !isCurrentTier && (
@@ -1543,12 +1643,12 @@ export default function Channel() {
                               {joiningTierId === tier.id ? (
                                 <>
                                   <Loader2 className="w-5 h-5 animate-spin" />
-                                  Processing...
+                                  {t.channel.processing}...
                                 </>
                               ) : (
                                 <>
                                   <Crown className="w-5 h-5" />
-                                  {membership ? 'Upgrade' : 'Purchase'} — {parseFloat(tier.priceKas).toFixed(2)} KAS
+                                  {membership ? t.channel.upgrade : t.channel.purchase} — {parseFloat(tier.priceKas).toFixed(2)} KAS
                                 </>
                               )}
                             </button>
@@ -1562,11 +1662,11 @@ export default function Channel() {
                     <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center border border-purple-500/30">
                       <Crown className="w-8 h-8 text-purple-400" />
                     </div>
-                    <h3 className="text-lg font-semibold text-white mb-2">No membership tiers yet</h3>
+                    <h3 className="text-lg font-semibold text-white mb-2">{t.channel.membership}</h3>
                     <p className="text-slate-400">
                       {isChannelOwner 
-                        ? "Create membership tiers to offer exclusive perks to your supporters."
-                        : "This creator hasn't set up membership tiers yet."}
+                        ? t.channel.createChannel
+                        : t.channel.noVideos}
                     </p>
                   </div>
                 )}
@@ -1576,30 +1676,30 @@ export default function Channel() {
             {/* About Tab */}
             {activeTab === "about" && (
               <div className="max-w-2xl">
-                <h3 className="text-lg font-semibold text-white mb-4">About {channel.name}</h3>
+                <h3 className="text-lg font-semibold text-white mb-4">{t.channel.about} {channel.name}</h3>
                 <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">
-                  {(channel as any).about || "This creator hasn't added an about section yet."}
+                  {(channel as any).about || t.channel.creatorNoDescription}
                 </p>
                 <div className="mt-8 pt-8 border-t border-slate-800">
-                  <h4 className="text-sm font-medium text-slate-400 mb-4">Stats</h4>
+                  <h4 className="text-sm font-medium text-slate-400 mb-4">{t.channel.stats}</h4>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="p-4 bg-slate-900/50 rounded-xl">
                       <p className="text-2xl font-bold text-white">{channel.subscriberCount.toLocaleString()}</p>
-                      <p className="text-sm text-slate-400">Subscribers</p>
+                      <p className="text-sm text-slate-400">{t.channel.subscribers}</p>
                     </div>
                     <div className="p-4 bg-slate-900/50 rounded-xl">
                       <p className="text-2xl font-bold text-white">{videos.length}</p>
-                      <p className="text-sm text-slate-400">Videos</p>
+                      <p className="text-sm text-slate-400">{t.channel.videos}</p>
                     </div>
                     {isChannelOwner && (
                       <div className="p-4 bg-slate-900/50 rounded-xl">
                         <p className="text-2xl font-bold text-teal-400">{formatKas(channel.totalKasEarned)}</p>
-                        <p className="text-sm text-slate-400">KAS Earned</p>
+                        <p className="text-sm text-slate-400">{t.channel.kasEarned}</p>
                       </div>
                     )}
                     <div className="p-4 bg-slate-900/50 rounded-xl">
                       <p className="text-2xl font-bold text-white">{new Date(channel.createdAt).toLocaleDateString()}</p>
-                      <p className="text-sm text-slate-400">Joined</p>
+                      <p className="text-sm text-slate-400">{t.channel.joined}</p>
                     </div>
                   </div>
                 </div>
@@ -1627,8 +1727,8 @@ export default function Channel() {
                     <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-pink-500/20 to-red-500/20 flex items-center justify-center border border-pink-500/30">
                       <Heart className="w-8 h-8 text-pink-400" />
                     </div>
-                    <h3 className="text-lg font-semibold text-white mb-2">No liked videos yet</h3>
-                    <p className="text-slate-400">Videos you like will appear here.</p>
+                    <h3 className="text-lg font-semibold text-white mb-2">{t.video.likes}</h3>
+                    <p className="text-slate-400">{t.channel.noVideos}</p>
                   </div>
                 )}
               </>
@@ -1668,7 +1768,7 @@ export default function Channel() {
             onClick={e => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold text-white">Tip Creator</h2>
+              <h2 className="text-xl font-bold text-white">{t.video.tip}</h2>
               <button 
                 onClick={() => setShowTipModal(false)}
                 className="p-2 hover:bg-slate-800 rounded-full transition-colors"
@@ -1690,7 +1790,7 @@ export default function Channel() {
             </div>
 
             <div className="mb-4">
-              <label className="text-sm text-slate-400 mb-2 block">Tip Amount (KAS)</label>
+              <label className="text-sm text-slate-400 mb-2 block">{t.video.tipAmount || 'Tip Amount'} (KAS)</label>
               <div className="relative">
                 <div className="absolute left-4 top-1/2 -translate-y-1/2">
                   <KaspaIcon size={20} />
@@ -1707,7 +1807,7 @@ export default function Channel() {
               </div>
               {balance !== null && (
                 <p className="text-sm text-slate-500 mt-2">
-                  Balance: {parseFloat(balance).toFixed(4)} KAS
+                  {t.settings.balance || 'Balance'}: {parseFloat(balance).toFixed(4)} KAS
                 </p>
               )}
             </div>
@@ -1732,12 +1832,12 @@ export default function Channel() {
               {isTipping ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  Sending...
+                  {t.common.loading}
                 </>
               ) : (
                 <>
                   <Gift className="w-5 h-5" />
-                  Send Tip
+                  {t.video.tip}
                 </>
               )}
             </button>
@@ -1758,7 +1858,7 @@ export default function Channel() {
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-bold text-white flex items-center gap-2">
                 <Crown className="w-6 h-6 text-amber-400" />
-                Create Membership Tier
+                {t.channel.createMembershipTier}
               </h2>
               <button 
                 onClick={() => setShowCreateTierModal(false)}
@@ -1770,7 +1870,7 @@ export default function Channel() {
 
             <div className="space-y-4">
               <div>
-                <label className="text-sm text-slate-400 mb-2 block">Tier Name *</label>
+                <label className="text-sm text-slate-400 mb-2 block">{t.channel.tierName} *</label>
                 <input
                   type="text"
                   value={newTierName}
@@ -1781,7 +1881,7 @@ export default function Channel() {
               </div>
 
               <div>
-                <label className="text-sm text-slate-400 mb-2 block">Price (KAS) *</label>
+                <label className="text-sm text-slate-400 mb-2 block">{t.channel.tierPrice} (KAS) *</label>
                 <div className="relative">
                   <div className="absolute left-4 top-1/2 -translate-y-1/2">
                     <KaspaIcon size={20} />
@@ -1796,22 +1896,22 @@ export default function Channel() {
                     className="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 pl-12 pr-4 text-white focus:outline-none focus:ring-2 focus:ring-teal-500"
                   />
                 </div>
-                <p className="text-xs text-slate-500 mt-1">Monthly membership price in Kaspa</p>
+                <p className="text-xs text-slate-500 mt-1">{t.channel.tierPriceHint || 'Membership price in Kaspa (31 days access)'}</p>
               </div>
 
               <div>
-                <label className="text-sm text-slate-400 mb-2 block">Description</label>
+                <label className="text-sm text-slate-400 mb-2 block">{t.channel.tierDescription}</label>
                 <input
                   type="text"
                   value={newTierDescription}
                   onChange={e => setNewTierDescription(e.target.value)}
-                  placeholder="Brief description of this tier"
+                  placeholder={t.channel.tierDescriptionHint || 'Brief description of this tier'}
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl py-3 px-4 text-white focus:outline-none focus:ring-2 focus:ring-teal-500"
                 />
               </div>
 
               <div>
-                <label className="text-sm text-slate-400 mb-2 block">Benefits (one per line)</label>
+                <label className="text-sm text-slate-400 mb-2 block">{t.channel.tierBenefits}</label>
                 <textarea
                   value={newTierBenefits}
                   onChange={e => setNewTierBenefits(e.target.value)}
@@ -1830,12 +1930,12 @@ export default function Channel() {
               {isCreatingTier ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  Creating...
+                  {t.common.loading}
                 </>
               ) : (
                 <>
                   <Plus className="w-5 h-5" />
-                  Create Tier
+                  {t.common.create}
                 </>
               )}
             </button>
@@ -1886,7 +1986,7 @@ export default function Channel() {
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-xl font-bold text-white flex items-center gap-2">
                 <Link2 className="w-5 h-5 text-teal-400" />
-                Links
+                {t.channel.links}
               </h3>
               <button 
                 onClick={() => setShowLinksModal(false)}
@@ -1915,20 +2015,20 @@ export default function Channel() {
                 </a>
               ))}
               {channelLinks.length === 0 && (
-                <p className="text-center text-slate-500 py-8">No links added yet</p>
+                <p className="text-center text-slate-500 py-8">{t.channel.noVideos}</p>
               )}
             </div>
 
             {/* Add link form for channel owner */}
             {isChannelOwner && (
               <div className="mt-6 pt-6 border-t border-slate-700">
-                <h4 className="text-sm font-medium text-slate-400 mb-3">Add New Link</h4>
+                <h4 className="text-sm font-medium text-slate-400 mb-3">{t.channel.addNewLink || 'Add New Link'}</h4>
                 <div className="space-y-3">
                   <input
                     type="text"
                     value={newLinkTitle}
                     onChange={e => setNewLinkTitle(e.target.value)}
-                    placeholder="Link title (e.g., Twitter)"
+                    placeholder={t.channel.linkTitlePlaceholder || 'Link title (e.g., Twitter)'}
                     className="w-full bg-slate-800 border border-slate-700 rounded-xl py-2.5 px-4 text-white focus:outline-none focus:ring-2 focus:ring-teal-500"
                   />
                   <input
@@ -1948,7 +2048,7 @@ export default function Channel() {
                     ) : (
                       <>
                         <Plus className="w-4 h-4" />
-                        Add Link
+                        {t.channel.addLink}
                       </>
                     )}
                   </button>
@@ -1957,7 +2057,7 @@ export default function Channel() {
                 {/* Existing links with delete option */}
                 {channelLinks.length > 0 && (
                   <div className="mt-4 space-y-2">
-                    <p className="text-xs text-slate-500">Manage existing links:</p>
+                    <p className="text-xs text-slate-500">{t.channel.manageLinks || 'Manage existing links'}:</p>
                     {channelLinks.map(link => (
                       <div key={link.id} className="flex items-center justify-between p-2 bg-slate-800/50 rounded-lg">
                         <span className="text-sm text-slate-300 truncate flex-1">{link.title}</span>

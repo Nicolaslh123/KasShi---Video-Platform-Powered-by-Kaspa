@@ -1,0 +1,4 @@
+ALTER TABLE external_wallet_users DROP COLUMN require_password_on_login;
+ALTER TABLE external_wallet_users DROP COLUMN encrypted_password_mnemonic;
+ALTER TABLE external_wallet_users DROP COLUMN is_extra_password_enabled;
+ALTER TABLE external_wallet_users DROP COLUMN extra_password_hash;

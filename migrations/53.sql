@@ -1,0 +1,1 @@
+ALTER TABLE watch_progress ADD COLUMN user_id TEXT;

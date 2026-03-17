@@ -76,6 +76,17 @@ const WalletContext = createContext<WalletContextType | null>(null);
 
 const EXTERNAL_WALLET_KEY = "kasshi_external_wallet";
 
+// Detect if running inside Electron
+function isElectron(): boolean {
+  if (typeof navigator !== 'undefined' && navigator.userAgent.includes('Electron')) {
+    return true;
+  }
+  if (typeof window !== 'undefined' && (window as any).electronAPI) {
+    return true;
+  }
+  return false;
+}
+
 export function WalletProvider({ children }: { children: ReactNode }) {
   const { user, isPending: authPending } = useAuth();
   const [wallet, setWallet] = useState<WalletState | null>(null);
@@ -92,17 +103,65 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     if (stored) {
       try {
         const parsed = JSON.parse(stored) as ExternalWalletState;
-        setExternalWallet(parsed);
-        // Set wallet state - use internal wallet as primary for payments
-        setWallet({
-          address: parsed.internalAddress || parsed.address,
-          publicKey: parsed.internalPublicKey || parsed.publicKey || "",
-          balanceKAS: "0.00",
-          isLinkedToAccount: false,
-        });
-        // Fetch balance and channel for external wallet
-        // Pass externalAddress for channel lookup (channel may have been created via Kastle/KasWare extension)
-        fetchExternalWalletData(parsed.externalAddress || parsed.address, parsed.internalAddress);
+        
+        // For Electron, validate the stored token to ensure persistent login
+        if (isElectron() && parsed.authToken) {
+          // Validate and refresh the session
+          fetch("/api/wallet-auth/refresh", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${parsed.authToken}`,
+            },
+          })
+            .then(res => {
+              if (!res.ok) {
+                // Token is invalid/expired, clear stored session
+                console.log("Electron session expired, clearing stored wallet");
+                localStorage.removeItem(EXTERNAL_WALLET_KEY);
+                setIsLoading(false);
+                return;
+              }
+              return res.json();
+            })
+            .then(data => {
+              if (!data) return;
+              
+              // Session is valid, restore wallet state
+              setExternalWallet(parsed);
+              setWallet({
+                address: parsed.internalAddress || parsed.address,
+                publicKey: parsed.internalPublicKey || parsed.publicKey || "",
+                balanceKAS: "0.00",
+                isLinkedToAccount: false,
+              });
+              fetchExternalWalletData(parsed.externalAddress || parsed.address, parsed.internalAddress);
+            })
+            .catch(err => {
+              console.error("Failed to refresh Electron session:", err);
+              // Still try to use stored wallet on network error
+              setExternalWallet(parsed);
+              setWallet({
+                address: parsed.internalAddress || parsed.address,
+                publicKey: parsed.internalPublicKey || parsed.publicKey || "",
+                balanceKAS: "0.00",
+                isLinkedToAccount: false,
+              });
+              fetchExternalWalletData(parsed.externalAddress || parsed.address, parsed.internalAddress);
+            });
+        } else {
+          // Non-Electron or no token - restore directly
+          setExternalWallet(parsed);
+          // Set wallet state - use internal wallet as primary for payments
+          setWallet({
+            address: parsed.internalAddress || parsed.address,
+            publicKey: parsed.internalPublicKey || parsed.publicKey || "",
+            balanceKAS: "0.00",
+            isLinkedToAccount: false,
+          });
+          // Fetch balance and channel for external wallet
+          // Pass externalAddress for channel lookup (channel may have been created via Kastle/KasWare extension)
+          fetchExternalWalletData(parsed.externalAddress || parsed.address, parsed.internalAddress);
+        }
       } catch (e) {
         console.error("Failed to parse external wallet:", e);
         localStorage.removeItem(EXTERNAL_WALLET_KEY);
@@ -185,7 +244,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const loadWalletFromAccount = async (): Promise<{ success: boolean; error?: string }> => {
     setIsLoading(true);
     try {
-      const res = await fetch("/api/wallet");
+      const res = await fetch("/api/wallet", { credentials: "include" });
       
       if (!res.ok) {
         // User not logged in or no wallet
@@ -225,7 +284,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       // Check pending balance and process renewals after a short delay (need channel to be set)
       setTimeout(async () => {
         try {
-          const pendingRes = await fetch("/api/kasshi/pending-balance");
+          const pendingRes = await fetch("/api/kasshi/pending-balance", { credentials: "include" });
           if (pendingRes.ok) {
             const pendingData = await pendingRes.json();
             setPendingBalance({
@@ -257,23 +316,29 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Refresh balance
+  // Refresh balance - supports both internal wallets and external wallets with internal custody
   const refreshBalance = useCallback(async () => {
-    if (!wallet?.address) {
+    // For internal wallet users, use wallet.address
+    // For external wallet users (KasWare/Kastle), use their internal custody address
+    const balanceAddress = wallet?.address || externalWallet?.internalAddress;
+    
+    if (!balanceAddress) {
       setBalance("0.00");
       return;
     }
     
     try {
-      const res = await fetch(`/api/kaspa/balance/${wallet.address}`);
+      const res = await fetch(`/api/kaspa/balance/${balanceAddress}`);
       const data = await res.json();
       const newBalance = data.balanceKAS || "0.00";
       setBalance(newBalance);
-      setWallet(prev => prev ? { ...prev, balanceKAS: newBalance } : null);
+      if (wallet) {
+        setWallet(prev => prev ? { ...prev, balanceKAS: newBalance } : null);
+      }
     } catch (error) {
       console.error("Failed to fetch balance:", error);
     }
-  }, [wallet?.address]);
+  }, [wallet?.address, externalWallet?.internalAddress]);
 
   // Refresh pending balance for micropayment batching
   const refreshPendingBalance = useCallback(async () => {
@@ -306,13 +371,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     }
   }, [wallet?.address, externalWallet?.authToken]);
 
-  // Auto-refresh balance every 30 seconds
+  // Auto-refresh balance every 30 seconds (for both internal and external wallet users)
   useEffect(() => {
-    if (wallet?.address) {
+    const hasBalanceAddress = wallet?.address || externalWallet?.internalAddress;
+    if (hasBalanceAddress) {
       const interval = setInterval(refreshBalance, 30000);
       return () => clearInterval(interval);
     }
-  }, [wallet?.address, refreshBalance]);
+  }, [wallet?.address, externalWallet?.internalAddress, refreshBalance]);
 
   const disconnect = () => {
     setWallet(null);
@@ -333,6 +399,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const res = await fetch("/api/kasshi/channels", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           walletAddress: wallet.address,
           name,
@@ -383,15 +450,37 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     provider?: "kasware" | "kastle"
   ): Promise<{ success: boolean; error?: string }> => {
     try {
+      // Check for stored referral code
+      let referralCode: string | undefined;
+      try {
+        const storedRef = localStorage.getItem('kasshi_referral');
+        if (storedRef) {
+          const refData = JSON.parse(storedRef);
+          if (refData.expires > Date.now()) {
+            referralCode = refData.code;
+          } else {
+            localStorage.removeItem('kasshi_referral');
+          }
+        }
+      } catch {
+        // Ignore parsing errors
+      }
+      
       const res = await fetch("/api/wallet-auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address, signature, challenge, publicKey }),
+        body: JSON.stringify({ address, signature, challenge, publicKey, referralCode }),
       });
 
       if (!res.ok) {
-        const data = await res.json();
-        return { success: false, error: data.error || "Authentication failed" };
+        try {
+          const data = await res.json();
+          const errorMsg = data.details ? `${data.error}: ${data.details}` : (data.error || "Authentication failed");
+          console.error("Wallet verify error:", data);
+          return { success: false, error: errorMsg };
+        } catch {
+          return { success: false, error: `Authentication failed (${res.status})` };
+        }
       }
 
       const data = await res.json();
@@ -405,11 +494,16 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         // Store internal custody wallet for frictionless micropayments
         internalAddress: data.internalWalletAddress,
         internalPublicKey: data.internalPublicKey,
+        // Store external address for channel lookup persistence
+        externalAddress: address,
       };
       
       // Store in localStorage
       localStorage.setItem(EXTERNAL_WALLET_KEY, JSON.stringify(extWallet));
       setExternalWallet(extWallet);
+      
+      // Clear used referral code
+      localStorage.removeItem('kasshi_referral');
       
       // Set wallet state - use internal wallet as primary for payments
       setWallet({
@@ -448,26 +542,28 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     recipientChannelId?: number,
     commentId?: number
   ): Promise<{ success: boolean; transactionId?: string; error?: string; needsConsolidation?: boolean; requiresChannel?: boolean; utxoCount?: number; batched?: boolean }> => {
-    if (!wallet) {
-      return { success: false, error: "No wallet connected" };
-    }
-    
     // Check if this is an external wallet user with internal custody wallet
     const isExternalWithInternal = externalWallet?.internalAddress && externalWallet?.authToken;
+    
+    // Need either internal wallet OR external wallet with internal custody
+    if (!wallet && !isExternalWithInternal) {
+      return { success: false, error: "No wallet connected" };
+    }
     
     try {
       // Use internal-micropay endpoint for KasWare users with internal wallet
       const endpoint = isExternalWithInternal ? "/api/kasshi/internal-micropay" : "/api/kasshi/micropay";
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       
-      // Add Bearer token for external wallet users
-      if (isExternalWithInternal) {
-        headers["Authorization"] = `Bearer ${externalWallet!.authToken}`;
+      // Add Bearer token for external wallet users (always send if available)
+      if (externalWallet?.authToken) {
+        headers["Authorization"] = `Bearer ${externalWallet.authToken}`;
       }
       
       const res = await fetch(endpoint, {
         method: "POST",
         headers,
+        credentials: "include", // Required for Google login session cookies
         body: JSON.stringify({
           toAddress,
           amountKas: amountKAS.toString(),

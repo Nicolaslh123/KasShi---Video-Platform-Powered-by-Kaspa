@@ -1,0 +1,1 @@
+ALTER TABLE external_wallet_users ADD COLUMN is_admin INTEGER DEFAULT 0;

@@ -1,0 +1,1 @@
+ALTER TABLE playlists ADD COLUMN music_profile_id INTEGER;

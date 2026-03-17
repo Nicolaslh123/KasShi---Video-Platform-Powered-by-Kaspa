@@ -1,0 +1,1 @@
+ALTER TABLE watch_progress DROP COLUMN user_id;

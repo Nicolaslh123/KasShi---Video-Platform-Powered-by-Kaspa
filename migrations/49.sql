@@ -1,0 +1,1 @@
+ALTER TABLE videos ADD COLUMN price_kas TEXT DEFAULT '0';

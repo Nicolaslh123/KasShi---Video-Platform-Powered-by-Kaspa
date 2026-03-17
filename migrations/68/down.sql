@@ -1,0 +1,1 @@
+DROP TABLE music_profile_reports;

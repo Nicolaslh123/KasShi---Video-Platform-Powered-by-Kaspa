@@ -30,4 +30,9 @@ interface Env {
   
   // OpenAI API for AI subtitle generation
   OPENAI_API_KEY?: string;
+  
+  // Bunny Stream for HLS video encoding
+  BUNNY_API_KEY?: string;
+  BUNNY_LIBRARY_ID?: string;
+  BUNNY_CDN_HOSTNAME?: string;
 }

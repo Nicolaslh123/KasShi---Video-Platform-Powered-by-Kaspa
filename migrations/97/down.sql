@@ -1,0 +1,1 @@
+UPDATE music_profiles SET user_id = NULL WHERE user_id IS NOT NULL;

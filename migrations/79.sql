@@ -1,0 +1,9 @@
+CREATE INDEX IF NOT EXISTS idx_track_plays_wallet ON track_plays(wallet_address);
+CREATE INDEX IF NOT EXISTS idx_track_plays_user ON track_plays(user_id);
+CREATE INDEX IF NOT EXISTS idx_track_plays_created ON track_plays(created_at);
+CREATE INDEX IF NOT EXISTS idx_episode_plays_wallet ON episode_plays(wallet_address);
+CREATE INDEX IF NOT EXISTS idx_episode_plays_user ON episode_plays(user_id);
+CREATE INDEX IF NOT EXISTS idx_playlist_likes_wallet ON playlist_likes(wallet_address);
+CREATE INDEX IF NOT EXISTS idx_playlist_likes_user ON playlist_likes(user_id);
+CREATE INDEX IF NOT EXISTS idx_playlists_wallet ON playlists(wallet_address);
+CREATE INDEX IF NOT EXISTS idx_playlists_user ON playlists(user_id);

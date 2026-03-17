@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import LocalizedLink from "../components/LocalizedLink";
 import { ArrowLeft, Shield, FileText, Scale, AlertTriangle, Mail } from "lucide-react";
 import { KasShiLogo } from "../components/KasShiLogo";
 
@@ -22,9 +22,9 @@ export default function Legal() {
       {/* Header */}
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-white/5 border-b border-white/10">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center gap-4">
-          <Link to="/" className="p-2 rounded-lg hover:bg-white/10 transition-colors">
+          <LocalizedLink to="/" className="p-2 rounded-lg hover:bg-white/10 transition-colors">
             <ArrowLeft className="w-5 h-5 text-white" />
-          </Link>
+          </LocalizedLink>
           <KasShiLogo size={32} />
           <h1 className="text-xl font-bold text-white">Legal</h1>
         </div>

@@ -1,0 +1,1 @@
+ALTER TABLE external_wallet_users DROP COLUMN is_admin;

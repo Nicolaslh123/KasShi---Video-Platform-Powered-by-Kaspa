@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { Search, Upload, Menu, X, Wallet, Settings, Bell, Eye, EyeOff } from "lucide-react";
+import LocalizedLink from "./LocalizedLink";
+import { useLocalizedNavigate } from "./LanguageRouter";
+import { Search, Upload, Menu, X, Wallet, Settings, Bell, Eye, EyeOff, Globe, ChevronDown, LayoutDashboard, Music2, Activity } from "lucide-react";
 import { useWallet } from "../contexts/WalletContext";
+import { useLanguage, languages } from "../contexts/LanguageContext";
 import { WalletModal } from "./WalletModal";
 import { KasShiLogo, KaspaIcon } from "./KasShiLogo";
+import LanguageSelector from "./LanguageSelector";
 
 interface Notification {
   id: number;
@@ -29,9 +32,11 @@ export default function Navbar() {
   const [isBalanceHidden, setIsBalanceHidden] = useState(() => {
     return localStorage.getItem("kasshi_hide_balance") === "true";
   });
+  const [isMobileLangOpen, setIsMobileLangOpen] = useState(false);
   const notificationRef = useRef<HTMLDivElement>(null);
-  const navigate = useNavigate();
+  const navigate = useLocalizedNavigate();
   const { isConnected, wallet, balance, pendingBalance, externalWallet } = useWallet();
+  const { t, language, setLanguage } = useLanguage();
 
   const toggleBalanceVisibility = () => {
     const newValue = !isBalanceHidden;
@@ -49,7 +54,7 @@ export default function Navbar() {
       if (externalWallet?.authToken) {
         headers["Authorization"] = `Bearer ${externalWallet.authToken}`;
       }
-      const res = await fetch("/api/kasshi/notifications", { headers });
+      const res = await fetch("/api/kasshi/notifications", { headers, credentials: "include" });
       if (res.ok) {
         const data = await res.json();
         setNotifications(data.notifications || []);
@@ -88,7 +93,8 @@ export default function Navbar() {
         if (externalWallet?.authToken) {
           headers["Authorization"] = `Bearer ${externalWallet.authToken}`;
         }
-        await fetch("/api/kasshi/notifications/read", { method: "POST", headers });
+        await fetch("/api/kasshi/notifications/read", { method: "POST", headers, credentials: "include", body: JSON.stringify({}) });
+        // Update local state immediately - no need to refetch since we've already marked them as read
         setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
       } catch (err) {
         console.error("Failed to mark notifications as read:", err);
@@ -126,27 +132,39 @@ export default function Navbar() {
   };
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 bg-slate-900/95 backdrop-blur-md border-b border-slate-800">
-      <div className="max-w-[2000px] mx-auto px-4 h-16 flex items-center gap-4">
-        {/* Logo */}
-        <Link to="/" className="flex items-center gap-2 flex-shrink-0">
-          <KasShiLogo size={36} className="rounded-full" />
-          <span className="text-xl font-bold hidden sm:block">
-            <span className="text-teal-300">Kas</span><span className="text-teal-500">Shi</span>
-          </span>
-        </Link>
+    <nav className="fixed top-0 left-0 right-0 z-50 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-[1800px] mx-auto h-16 flex items-center gap-4 xl:gap-6">
+        {/* Left section - matches sidebar width (280px) on xl screens */}
+        <div className="flex items-center gap-4 flex-shrink-0 xl:w-[280px]">
+          {/* Logo */}
+          <LocalizedLink to="/" className="flex items-center gap-2 flex-shrink-0">
+            <KasShiLogo size={36} className="rounded-full" />
+            <span className="text-xl font-bold hidden sm:block">
+              <span className="text-teal-300">Kas</span><span className="text-teal-500">Shi</span>
+            </span>
+          </LocalizedLink>
 
-        {/* Search bar - Desktop */}
+          {/* Music tab - next to logo */}
+          <button
+            onClick={() => navigate("/music")}
+            className="hidden sm:flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-purple-600/80 to-pink-600/80 hover:from-purple-500 hover:to-pink-500 rounded-full transition-all"
+          >
+            <Music2 className="w-4 h-4 text-white" />
+            <span className="text-sm font-medium text-white">Music</span>
+          </button>
+        </div>
+
+        {/* Search bar - Desktop - aligns with video grid after sidebar */}
         <form 
           onSubmit={handleSearch}
-          className="hidden md:flex flex-1 max-w-2xl mx-auto"
+          className="hidden md:flex flex-1 max-w-xl"
         >
           <div className="flex w-full">
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search videos..."
+              placeholder={t.nav.search}
               className="flex-1 bg-slate-800/50 border border-slate-700 rounded-l-full px-5 py-2.5 text-white placeholder-slate-400 focus:outline-none focus:border-teal-500/50 focus:bg-slate-800 transition-all"
             />
             <button
@@ -165,13 +183,12 @@ export default function Navbar() {
             <Search className="w-5 h-5 text-slate-300" />
           </button>
 
-          {/* Upload button */}
+          {/* Mobile music button */}
           <button
-            onClick={() => navigate("/upload")}
-            className="hidden sm:flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-full transition-colors"
+            onClick={() => navigate("/music")}
+            className="sm:hidden p-2 bg-gradient-to-r from-purple-600/80 to-pink-600/80 hover:from-purple-500 hover:to-pink-500 rounded-full transition-all"
           >
-            <Upload className="w-4 h-4 text-slate-300" />
-            <span className="text-sm font-medium text-slate-300">Upload</span>
+            <Music2 className="w-5 h-5 text-white" />
           </button>
 
           {/* Notifications */}
@@ -189,12 +206,12 @@ export default function Navbar() {
                 )}
               </button>
               {showNotifications && (
-                <div className="absolute right-0 top-12 w-80 max-h-96 overflow-y-auto bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-50">
+                <div className="absolute right-0 sm:right-0 top-12 w-[calc(100vw-1rem)] sm:w-80 max-w-sm max-h-96 overflow-y-auto bg-slate-800 border border-slate-700 rounded-xl shadow-xl z-50 -translate-x-1/2 sm:translate-x-0 left-1/2 sm:left-auto">
                   <div className="p-3 border-b border-slate-700">
-                    <h3 className="font-semibold text-white">Notifications</h3>
+                    <h3 className="font-semibold text-white">{t.notifications?.title || 'Notifications'}</h3>
                   </div>
                   {notifications.length === 0 ? (
-                    <div className="p-6 text-center text-slate-400 text-sm">No notifications yet</div>
+                    <div className="p-6 text-center text-slate-400 text-sm">{t.notifications?.noNotifications || 'No notifications yet'}</div>
                   ) : (
                     <div className="divide-y divide-slate-700">
                       {notifications.slice(0, 10).map(n => (
@@ -219,12 +236,48 @@ export default function Navbar() {
             </div>
           )}
 
+          {/* Language Selector */}
+          <div className="hidden sm:block">
+            <LanguageSelector />
+          </div>
+
+          {/* Dashboard - only show if user has a channel */}
+          {isConnected && (
+            <button
+              onClick={() => navigate("/dashboard")}
+              className="hidden sm:flex p-2 hover:bg-slate-800 rounded-full transition-colors"
+              title={t.nav?.dashboard || "Dashboard"}
+            >
+              <LayoutDashboard className="w-5 h-5 text-slate-300" />
+            </button>
+          )}
+
+          {/* Activity */}
+          {isConnected && (
+            <button
+              onClick={() => navigate("/activity")}
+              className="hidden sm:flex p-2 hover:bg-slate-800 rounded-full transition-colors"
+              title={t.activity?.title || "Activity"}
+            >
+              <Activity className="w-5 h-5 text-slate-300" />
+            </button>
+          )}
+
           {/* Settings */}
           <button
             onClick={() => navigate("/settings")}
             className="hidden sm:flex p-2 hover:bg-slate-800 rounded-full transition-colors"
           >
             <Settings className="w-5 h-5 text-slate-300" />
+          </button>
+
+          {/* Upload button */}
+          <button
+            onClick={() => navigate("/upload")}
+            className="hidden sm:flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-full transition-colors"
+          >
+            <Upload className="w-4 h-4 text-slate-300" />
+            <span className="text-sm font-medium text-slate-300">{t.nav.upload}</span>
           </button>
 
           {/* Connect Wallet button */}
@@ -263,7 +316,7 @@ export default function Navbar() {
               className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-teal-500 to-cyan-600 hover:from-teal-400 hover:to-cyan-500 text-white rounded-full font-medium transition-all shadow-lg shadow-teal-500/25 hover:shadow-teal-500/40"
             >
               <Wallet className="w-4 h-4" />
-              <span className="hidden sm:inline text-sm">Connect Wallet</span>
+              <span className="hidden sm:inline text-sm">{t.auth.connectWallet}</span>
             </button>
           )}
 
@@ -291,7 +344,7 @@ export default function Navbar() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search videos..."
+                placeholder={t.nav.search}
                 className="flex-1 bg-slate-800 border border-slate-700 rounded-l-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:border-teal-500/50"
               />
               <button
@@ -303,6 +356,18 @@ export default function Navbar() {
             </div>
           </form>
 
+          {/* Mobile music */}
+          <button
+            onClick={() => {
+              navigate("/music");
+              setIsMobileMenuOpen(false);
+            }}
+            className="flex items-center gap-3 w-full px-4 py-3 bg-gradient-to-r from-purple-600/80 to-pink-600/80 hover:from-purple-500 hover:to-pink-500 rounded-lg transition-colors"
+          >
+            <Music2 className="w-5 h-5 text-white" />
+            <span className="text-white font-medium">Music & Podcasts</span>
+          </button>
+
           {/* Mobile upload */}
           <button
             onClick={() => {
@@ -312,8 +377,36 @@ export default function Navbar() {
             className="flex items-center gap-3 w-full px-4 py-3 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"
           >
             <Upload className="w-5 h-5 text-slate-300" />
-            <span className="text-slate-300">Upload Video</span>
+            <span className="text-slate-300">{t.nav.upload}</span>
           </button>
+
+          {/* Mobile dashboard */}
+          {isConnected && (
+            <button
+              onClick={() => {
+                navigate("/dashboard");
+                setIsMobileMenuOpen(false);
+              }}
+              className="flex items-center gap-3 w-full px-4 py-3 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"
+            >
+              <LayoutDashboard className="w-5 h-5 text-slate-300" />
+              <span className="text-slate-300">{t.nav?.dashboard || "Dashboard"}</span>
+            </button>
+          )}
+
+          {/* Mobile activity */}
+          {isConnected && (
+            <button
+              onClick={() => {
+                navigate("/activity");
+                setIsMobileMenuOpen(false);
+              }}
+              className="flex items-center gap-3 w-full px-4 py-3 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"
+            >
+              <Activity className="w-5 h-5 text-slate-300" />
+              <span className="text-slate-300">{t.activity?.title || "Activity"}</span>
+            </button>
+          )}
 
           {/* Mobile settings */}
           <button
@@ -324,8 +417,46 @@ export default function Navbar() {
             className="flex items-center gap-3 w-full px-4 py-3 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"
           >
             <Settings className="w-5 h-5 text-slate-300" />
-            <span className="text-slate-300">Settings</span>
+            <span className="text-slate-300">{t.nav.settings}</span>
           </button>
+
+          {/* Mobile language selector */}
+          <div className="relative">
+            <button
+              onClick={() => setIsMobileLangOpen(!isMobileLangOpen)}
+              className="flex items-center justify-between w-full px-4 py-3 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <Globe className="w-5 h-5 text-slate-300" />
+                <span className="text-slate-300">{languages.find(l => l.code === language)?.name || "Language"}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-lg">{languages.find(l => l.code === language)?.flag}</span>
+                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${isMobileLangOpen ? "rotate-180" : ""}`} />
+              </div>
+            </button>
+            {isMobileLangOpen && (
+              <div className="mt-2 bg-slate-800 border border-slate-700 rounded-lg overflow-hidden max-h-60 overflow-y-auto">
+                {languages.map((lang) => (
+                  <button
+                    key={lang.code}
+                    onClick={() => {
+                      setLanguage(lang.code);
+                      setIsMobileLangOpen(false);
+                    }}
+                    className={`w-full px-4 py-3 flex items-center gap-3 transition-colors ${
+                      language === lang.code
+                        ? "bg-teal-500/20 text-teal-400"
+                        : "hover:bg-slate-700 text-slate-300"
+                    }`}
+                  >
+                    <span className="text-lg">{lang.flag}</span>
+                    <span className="text-sm">{lang.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

@@ -1,0 +1,9 @@
+DROP INDEX IF EXISTS idx_track_plays_wallet;
+DROP INDEX IF EXISTS idx_track_plays_user;
+DROP INDEX IF EXISTS idx_track_plays_created;
+DROP INDEX IF EXISTS idx_episode_plays_wallet;
+DROP INDEX IF EXISTS idx_episode_plays_user;
+DROP INDEX IF EXISTS idx_playlist_likes_wallet;
+DROP INDEX IF EXISTS idx_playlist_likes_user;
+DROP INDEX IF EXISTS idx_playlists_wallet;
+DROP INDEX IF EXISTS idx_playlists_user;

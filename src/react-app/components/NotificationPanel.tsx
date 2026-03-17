@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Bell, X, CheckCircle2, ArrowUpRight, ArrowDownLeft, Trash2, CheckCheck, Loader2 } from 'lucide-react';
+import { useLanguage } from '../contexts/LanguageContext';
 
 interface Notification {
   id: number;
@@ -18,6 +19,7 @@ interface NotificationPanelProps {
 }
 
 export default function NotificationPanel({ isOpen, onClose, onUnreadCountChange }: NotificationPanelProps) {
+  const { t } = useLanguage();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -95,10 +97,10 @@ export default function NotificationPanel({ isOpen, onClose, onUnreadCountChange
     const diffHours = Math.floor(diffMs / 3600000);
     const diffDays = Math.floor(diffMs / 86400000);
 
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
+    if (diffMins < 1) return t.notifications?.justNow || 'Just now';
+    if (diffMins < 60) return `${diffMins} ${diffMins === 1 ? t.time.minute : t.time.minutes} ${t.time.ago}`;
+    if (diffHours < 24) return `${diffHours} ${diffHours === 1 ? t.time.hour : t.time.hours} ${t.time.ago}`;
+    if (diffDays < 7) return `${diffDays} ${diffDays === 1 ? t.time.day : t.time.days} ${t.time.ago}`;
     return date.toLocaleDateString();
   };
 
@@ -118,14 +120,14 @@ export default function NotificationPanel({ isOpen, onClose, onUnreadCountChange
         <div className="flex items-center justify-between p-4 border-b border-white/10">
           <div className="flex items-center gap-3">
             <Bell className="w-5 h-5 text-[#70C7BA]" />
-            <h2 className="text-lg font-semibold text-white">Notifications</h2>
+            <h2 className="text-lg font-semibold text-white">{t.notifications?.title || 'Notifications'}</h2>
           </div>
           <div className="flex items-center gap-2">
             {notifications.some(n => !n.is_read) && (
               <button
                 onClick={markAllAsRead}
                 className="p-2 rounded-lg hover:bg-white/5 text-white/60 hover:text-white transition-colors"
-                title="Mark all as read"
+                title={t.notifications?.markAllRead || 'Mark all as read'}
               >
                 <CheckCheck className="w-4 h-4" />
               </button>
@@ -134,7 +136,7 @@ export default function NotificationPanel({ isOpen, onClose, onUnreadCountChange
               <button
                 onClick={clearAll}
                 className="p-2 rounded-lg hover:bg-white/5 text-white/60 hover:text-white transition-colors"
-                title="Clear all"
+                title={t.notifications?.clearAll || 'Clear all'}
               >
                 <Trash2 className="w-4 h-4" />
               </button>
@@ -157,8 +159,8 @@ export default function NotificationPanel({ isOpen, onClose, onUnreadCountChange
           ) : notifications.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-white/40">
               <Bell className="w-12 h-12 mb-4 opacity-50" />
-              <p className="text-sm">No notifications yet</p>
-              <p className="text-xs mt-1">You'll see transaction updates here</p>
+              <p className="text-sm">{t.notifications?.noNotifications || 'No notifications yet'}</p>
+              <p className="text-xs mt-1">{t.notifications?.transactionUpdatesHere || "You'll see transaction updates here"}</p>
             </div>
           ) : (
             <div className="divide-y divide-white/5">

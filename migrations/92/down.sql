@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_playlists_music_profile_id;

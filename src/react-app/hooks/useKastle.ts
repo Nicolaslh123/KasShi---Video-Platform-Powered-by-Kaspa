@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   wasmReady,
   isWalletInstalled,
@@ -36,34 +36,58 @@ export function useKastle(): UseKastleReturn {
   const [publicKey, setPublicKey] = useState<string | null>(null);
   const [balance, setBalance] = useState<{ confirmed: number; unconfirmed: number; total: number } | null>(null);
   const [wasmLoaded, setWasmLoaded] = useState(false);
+  
+  // Use ref to track connection status synchronously (React state is async)
+  // This prevents race conditions when signMessage is called immediately after connect
+  const isConnectedRef = useRef(false);
 
   // Initialize WASM and check if Kastle is installed
   useEffect(() => {
+    let mounted = true;
+    
     const init = async () => {
       try {
         console.log("[Kastle SDK] Waiting for WASM to be ready...");
         await wasmReady;
+        if (!mounted) return;
         console.log("[Kastle SDK] WASM ready");
         setWasmLoaded(true);
 
-        const installed = await isWalletInstalled();
-        console.log("[Kastle SDK] Wallet installed:", installed);
-        setIsAvailable(installed);
-      } catch (error) {
-        console.error("[Kastle SDK] Init error:", error);
-        setWasmLoaded(true);
-        
-        // Even if WASM fails, check if wallet is installed
         try {
           const installed = await isWalletInstalled();
+          if (!mounted) return;
+          console.log("[Kastle SDK] Wallet installed:", installed);
           setIsAvailable(installed);
-        } catch {
+        } catch (installError) {
+          // "Kastle provider not found" error occurs when extension isn't installed
+          const errMsg = String(installError);
+          if (errMsg.includes("provider not found") || errMsg.includes("not installed")) {
+            console.log("[Kastle SDK] Wallet not installed (caught gracefully)");
+          } else {
+            console.error("[Kastle SDK] Install check error:", installError);
+          }
+          if (mounted) setIsAvailable(false);
+        }
+      } catch (error) {
+        const errMsg = String(error);
+        // Handle "provider not found" error gracefully - it just means wallet isn't installed
+        if (errMsg.includes("provider not found") || errMsg.includes("not installed")) {
+          console.log("[Kastle SDK] Wallet not installed (caught gracefully)");
+        } else {
+          console.error("[Kastle SDK] Init error:", error);
+        }
+        if (mounted) {
+          setWasmLoaded(true);
           setIsAvailable(false);
         }
       }
     };
 
     init();
+    
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   // Set up event listeners when connected
@@ -77,6 +101,7 @@ export function useKastle(): UseKastleReturn {
         setAddress(newAddress);
       } else {
         setIsConnected(false);
+        isConnectedRef.current = false;
         setAddress(null);
         setPublicKey(null);
         setBalance(null);
@@ -121,9 +146,17 @@ export function useKastle(): UseKastleReturn {
       return { success: false, error: "WASM module not loaded yet. Please wait." };
     }
 
-    const installed = await isWalletInstalled();
-    if (!installed) {
-      return { success: false, error: "Kastle wallet not installed. Please install from Chrome Web Store." };
+    try {
+      const installed = await isWalletInstalled();
+      if (!installed) {
+        return { success: false, error: "Kastle wallet not installed. Please install from Chrome Web Store." };
+      }
+    } catch (checkError) {
+      const errMsg = String(checkError);
+      if (errMsg.includes("provider not found") || errMsg.includes("not installed")) {
+        return { success: false, error: "Kastle wallet not installed. Please install from Chrome Web Store." };
+      }
+      return { success: false, error: "Failed to check wallet status" };
     }
 
     setIsConnecting(true);
@@ -143,6 +176,7 @@ export function useKastle(): UseKastleReturn {
       console.log("[Kastle SDK] Wallet address:", addr);
       setAddress(addr);
       setIsConnected(true);
+      isConnectedRef.current = true; // Sync update for immediate use
 
       // Get public key
       try {
@@ -179,6 +213,7 @@ export function useKastle(): UseKastleReturn {
 
   const disconnect = useCallback(async () => {
     setIsConnected(false);
+    isConnectedRef.current = false; // Sync update
     setAddress(null);
     setPublicKey(null);
     setBalance(null);
@@ -192,7 +227,8 @@ export function useKastle(): UseKastleReturn {
   }, []);
 
   const signMessage = useCallback(async (message: string): Promise<{ success: boolean; signature?: string; error?: string }> => {
-    if (!isConnected) {
+    // Use ref for immediate check after connect() - React state may not have updated yet
+    if (!isConnectedRef.current) {
       return { success: false, error: "Wallet not connected" };
     }
 
@@ -209,7 +245,8 @@ export function useKastle(): UseKastleReturn {
   }, [isConnected]);
 
   const sendKaspa = useCallback(async (toAddress: string, kasAmount: number): Promise<{ success: boolean; txId?: string; error?: string }> => {
-    if (!isConnected) {
+    // Use ref for immediate check - React state may not have updated yet
+    if (!isConnectedRef.current) {
       return { success: false, error: "Wallet not connected" };
     }
 

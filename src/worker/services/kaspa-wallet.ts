@@ -282,10 +282,15 @@ export async function verifyPin(pin: string, storedHash: string): Promise<boolea
 
 // Query wallet balance from Kaspa network
 export async function getWalletBalance(address: string): Promise<WalletBalance | null> {
+  const apiUrl = `${getApiUrl()}/addresses/${address}/balance`;
+  console.log('[KASPA-BALANCE] Fetching from:', apiUrl);
+  
   try {
-    const response = await fetch(`${getApiUrl()}/addresses/${address}/balance`);
+    const response = await fetch(apiUrl);
+    console.log('[KASPA-BALANCE] Response status:', response.status);
     
     if (!response.ok) {
+      console.log('[KASPA-BALANCE] Non-OK response, returning 0');
       return {
         address,
         balanceKAS: '0.00',
@@ -294,8 +299,11 @@ export async function getWalletBalance(address: string): Promise<WalletBalance |
     }
     
     const data = await response.json() as { balance: number };
+    console.log('[KASPA-BALANCE] Raw API data:', JSON.stringify(data));
     const balanceSompi = data.balance || 0;
     const balanceKAS = (balanceSompi / 100000000).toFixed(8);
+    
+    console.log('[KASPA-BALANCE] Parsed balance:', { address: address.slice(0, 20) + '...', balanceKAS, balanceSompi });
     
     return {
       address,
@@ -303,7 +311,7 @@ export async function getWalletBalance(address: string): Promise<WalletBalance |
       balanceSompi: balanceSompi.toString(),
     };
   } catch (error) {
-    console.error('Kaspa balance query error:', error);
+    console.error('[KASPA-BALANCE] Error:', error);
     return {
       address,
       balanceKAS: '0.00',
@@ -368,6 +376,9 @@ export async function getTransactionHistory(address: string, limit = 20) {
 }
 
 // Sign a Kaspa transaction using OKX SDK's transfer function
+// Minimum change to create a separate output - below this, add to fee to avoid KIP-9 dust mass explosion
+const MIN_CHANGE_SOMPI = 20000000; // 0.2 KAS
+
 export async function signTransaction(
   inputs: UTXO[],
   toAddress: string,
@@ -379,13 +390,22 @@ export async function signTransaction(
   try {
     // Calculate total input amount
     const totalInput = inputs.reduce((sum, utxo) => sum + utxo.amount, 0);
-    const changeAmount = totalInput - amountSompi - feeSompi;
+    let changeAmount = totalInput - amountSompi - feeSompi;
     
     if (changeAmount < 0) {
       return {
         success: false,
         error: 'Insufficient funds',
       };
+    }
+    
+    // If change is dust (below MIN_CHANGE_SOMPI), add it to fee instead of creating a change output
+    // This avoids KIP-9 storage mass explosion from small outputs
+    let actualFee = feeSompi;
+    if (changeAmount > 0 && changeAmount < MIN_CHANGE_SOMPI) {
+      console.log(`Dust change ${changeAmount} sompi added to fee to avoid KIP-9 mass issues`);
+      actualFee += changeAmount;
+      changeAmount = 0;
     }
     
     // Build txData for OKX SDK transfer function
@@ -400,8 +420,8 @@ export async function signTransaction(
       outputs: [
         { address: toAddress, amount: amountSompi.toString() },
       ],
-      fee: feeSompi.toString(),
-      address: changeAddress, // Change address
+      fee: actualFee.toString(),
+      address: changeAmount > 0 ? changeAddress : '', // No change address if no change
       dustSize: '546', // Minimum output size
     };
     
@@ -498,7 +518,8 @@ export async function submitTransaction(signedTx: string): Promise<TransactionRe
 
 // Maximum UTXOs per transaction to avoid mass limit errors
 // Kaspa has a transaction mass limit of ~100000, each input adds ~1000+ mass
-const MAX_UTXOS_PER_TX = 50;
+// KIP-9 storage mass can explode with many inputs + dust outputs, so we keep this conservative
+const MAX_UTXOS_PER_TX = 25;
 
 // Consolidate UTXOs by sending to self (reduces many small UTXOs into fewer larger ones)
 export async function consolidateUTXOs(

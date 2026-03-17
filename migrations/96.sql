@@ -1,0 +1,1 @@
+ALTER TABLE music_profiles ADD COLUMN user_id TEXT;

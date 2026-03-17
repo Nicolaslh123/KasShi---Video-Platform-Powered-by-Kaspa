@@ -1,0 +1,1 @@
+ALTER TABLE podcast_episodes ADD COLUMN music_profile_id INTEGER;

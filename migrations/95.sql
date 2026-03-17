@@ -1,0 +1,1 @@
+ALTER TABLE track_reviews ADD COLUMN retry_count INTEGER DEFAULT 0;

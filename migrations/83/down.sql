@@ -1,0 +1,4 @@
+DROP INDEX idx_track_reviews_created_at;
+DROP INDEX idx_track_reviews_reviewer_wallet;
+DROP INDEX idx_track_reviews_track_id;
+DROP TABLE track_reviews;

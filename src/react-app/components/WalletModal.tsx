@@ -6,6 +6,7 @@ import { useWallet } from "../contexts/WalletContext";
 import { useAuth } from "@getmocha/users-service/react";
 import { useKasware } from "../hooks/useKasware";
 import { useKastle } from "../hooks/useKastle";
+import { useLanguage } from "../contexts/LanguageContext";
 import toast from "react-hot-toast";
 
 interface WalletModalProps {
@@ -15,9 +16,10 @@ interface WalletModalProps {
 
 export function WalletModal({ isOpen, onClose }: WalletModalProps) {
   const { wallet, isConnected, balance, pendingBalance, isLoading: walletLoading, loadWalletFromAccount, refreshBalance, refreshPendingBalance, connectExternalWallet, disconnectExternalWallet, externalWallet } = useWallet();
-  const { user, redirectToLogin } = useAuth();
+  const { user, redirectToLogin, logout } = useAuth();
   const kasware = useKasware();
   const kastle = useKastle();
+  const { t } = useLanguage();
   const [copied, setCopied] = useState(false);
   void copied; // Used in copy feedback
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -65,7 +67,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
     
     const amount = parseFloat(depositAmount);
     if (amount < 0.1) {
-      toast.error("Minimum deposit is 0.1 KAS");
+      toast.error(t.auth.minDeposit || "Minimum deposit is 0.1 KAS");
       return;
     }
     if (amount > parseFloat(externalBalance)) {
@@ -86,7 +88,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
       }
       
       if (result.success) {
-        toast.success(`Deposited ${amount} KAS to your KasShi wallet!`);
+        toast.success((t.auth.depositedSuccess || "Deposited {amount} KAS to your KasShi wallet!").replace("{amount}", amount.toString()));
         setDepositAmount("");
         setShowDeposit(false);
         // Refresh balances after a delay for blockchain confirmation
@@ -110,7 +112,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
     
     const amount = parseFloat(withdrawAmount);
     if (amount < 0.1) {
-      toast.error("Minimum withdrawal is 0.1 KAS");
+      toast.error(t.auth.minWithdraw || "Minimum withdrawal is 0.1 KAS");
       return;
     }
     if (amount > parseFloat(internalBalance)) {
@@ -286,10 +288,26 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
     
     setIsImporting(true);
     try {
+      // Check for stored referral code
+      let referralCode: string | undefined;
+      try {
+        const storedRef = localStorage.getItem('kasshi_referral');
+        if (storedRef) {
+          const refData = JSON.parse(storedRef);
+          if (refData.expires > Date.now()) {
+            referralCode = refData.code;
+          } else {
+            localStorage.removeItem('kasshi_referral');
+          }
+        }
+      } catch {
+        // Ignore parsing errors
+      }
+      
       const res = await fetch("/api/wallet-auth/import-seed", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ seedPhrase: seedPhrase.trim() }),
+        body: JSON.stringify({ seedPhrase: seedPhrase.trim(), referralCode }),
       });
       
       const data = await res.json();
@@ -312,6 +330,9 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
         externalAddress: data.address, // The actual Kastle/KasWare address derived from seed
       };
       localStorage.setItem("kasshi_external_wallet", JSON.stringify(extWallet));
+      
+      // Clear used referral code
+      localStorage.removeItem('kasshi_referral');
       
       toast.success("Wallet imported successfully!");
       setSeedPhrase("");
@@ -371,7 +392,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
           <div className="flex items-center gap-2">
             <Wallet className="w-5 h-5 text-[#70c7ba]" />
             <span className="font-semibold text-white">
-              {isConnected ? "Your Wallet" : "Connect Wallet"}
+              {isConnected ? (t.auth.yourWallet || "Your Wallet") : (t.auth.connectWallet || "Connect Wallet")}
             </span>
           </div>
           <button
@@ -388,7 +409,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
           {!isLoggedIn && !externalWallet && (
             <div className="space-y-4">
               <p className="text-gray-400 text-sm text-center mb-4">
-                Connect to start watching, earning, and supporting creators with KAS
+                {t.auth.connectDesc || "Connect to start watching, earning, and supporting creators with KAS"}
               </p>
               
               {/* Google Sign In Option */}
@@ -398,22 +419,22 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                   className="w-full p-4 bg-gradient-to-r from-[#70c7ba] to-[#49eacf] rounded-xl text-black font-semibold flex items-center justify-center gap-3 hover:opacity-90 transition-opacity"
                 >
                   <LogIn className="w-5 h-5" />
-                  Sign in with Google
+                  {t.auth.signInGoogle}
                 </button>
                 
                 <div className="bg-[#2a2a4a]/50 rounded-lg p-3 space-y-1.5">
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <span className="text-[#70c7ba]">✓</span>
-                    <span>Wallet auto-created • Instant micropayments</span>
+                    <span>{t.auth.walletAutoCreated} • Instant micropayments</span>
                   </div>
-                  <p className="text-xs text-gray-500 pl-5">Best for newcomers to crypto</p>
+                  <p className="text-xs text-gray-500 pl-5">{t.auth.bestForNewcomers}</p>
                 </div>
               </div>
 
               {/* Divider */}
               <div className="flex items-center gap-3">
                 <div className="flex-1 h-px bg-gray-700" />
-                <span className="text-xs text-gray-500 uppercase">or</span>
+                <span className="text-xs text-gray-500 uppercase">{t.common.or}</span>
                 <div className="flex-1 h-px bg-gray-700" />
               </div>
 
@@ -428,12 +449,12 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     {isAuthenticating ? (
                       <>
                         <RefreshCw className="w-5 h-5 animate-spin" />
-                        Connecting...
+                        {t.common.connecting || "Connecting..."}
                       </>
                     ) : (
                       <>
                         <Link2 className="w-5 h-5 text-[#70c7ba]" />
-                        Connect KasWare Wallet
+                        {t.auth.connectKasWare}
                       </>
                     )}
                   </button>
@@ -445,7 +466,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     className="w-full p-4 bg-[#2a2a4a]/50 border border-gray-700 rounded-xl text-gray-400 font-semibold flex items-center justify-center gap-3 hover:bg-[#2a2a4a] hover:text-gray-300 transition-all"
                   >
                     <Link2 className="w-5 h-5" />
-                    Install KasWare Wallet
+                    {t.auth.installKasWare || "Install KasWare Wallet"}
                     <ExternalLink className="w-4 h-4" />
                   </a>
                 )}
@@ -460,12 +481,12 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     {kastle.isConnecting || isAuthenticating ? (
                       <>
                         <RefreshCw className="w-5 h-5 animate-spin" />
-                        Connecting...
+                        {t.common.connecting || "Connecting..."}
                       </>
                     ) : (
                       <>
                         <Link2 className="w-5 h-5 text-[#49eacb]" />
-                        Connect Kastle Wallet
+                        {t.auth.connectKastle}
                       </>
                     )}
                   </button>
@@ -477,7 +498,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     className="w-full p-4 bg-[#2a2a4a]/50 border border-gray-700 rounded-xl text-gray-400 font-semibold flex items-center justify-center gap-3 hover:bg-[#2a2a4a] hover:text-gray-300 transition-all"
                   >
                     <Link2 className="w-5 h-5" />
-                    Install Kastle Wallet
+                    {t.auth.installKastle || "Install Kastle Wallet"}
                     <ExternalLink className="w-4 h-4" />
                   </a>
                 )}
@@ -485,9 +506,9 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                 <div className="bg-[#2a2a4a]/50 rounded-lg p-3 space-y-1.5">
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <span className="text-[#70c7ba]">✓</span>
-                    <span>Use your own wallet • Full control</span>
+                    <span>{t.auth.useYourWallet} • Full control</span>
                   </div>
-                  <p className="text-xs text-gray-500 pl-5">Best for crypto-native users</p>
+                  <p className="text-xs text-gray-500 pl-5">{t.auth.bestForCrypto}</p>
                 </div>
               </div>
 
@@ -509,12 +530,12 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     className="w-full p-3 bg-[#2a2a4a]/50 border border-gray-700 rounded-xl text-gray-400 font-medium flex items-center justify-center gap-2 hover:bg-[#2a2a4a] hover:text-gray-300 hover:border-[#70c7ba]/30 transition-all text-sm"
                   >
                     <Key className="w-4 h-4" />
-                    Import with Seed Phrase
+                    {t.auth.importSeed}
                   </button>
                 ) : (
                   <div className="p-4 bg-[#2a2a4a] border border-[#70c7ba]/30 rounded-xl space-y-3">
                     <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-white">Import Wallet</span>
+                      <span className="text-sm font-medium text-white">{t.auth.importWalletTitle || "Import Wallet"}</span>
                       <button
                         onClick={() => { setShowSeedImport(false); setSeedPhrase(""); }}
                         className="text-gray-400 hover:text-white"
@@ -523,12 +544,12 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                       </button>
                     </div>
                     <p className="text-xs text-gray-400">
-                      Enter your 12 or 24-word seed phrase from Kastle, KasWare, or any Kaspa wallet.
+                      {t.auth.seedPhraseDesc || "Enter your 12 or 24-word seed phrase from Kastle, KasWare, or any Kaspa wallet."}
                     </p>
                     <textarea
                       value={seedPhrase}
                       onChange={(e) => setSeedPhrase(e.target.value)}
-                      placeholder="Enter your seed phrase..."
+                      placeholder={t.auth.enterSeedPhrase || "Enter your seed phrase..."}
                       className="w-full h-20 px-3 py-2 bg-[#1a1a2e] border border-gray-700 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:border-[#70c7ba]/50 resize-none"
                     />
                     <button
@@ -539,25 +560,25 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                       {isImporting ? (
                         <>
                           <RefreshCw className="w-4 h-4 animate-spin" />
-                          Importing...
+                          {t.auth.importing || "Importing..."}
                         </>
                       ) : (
                         <>
                           <Key className="w-4 h-4" />
-                          Import Wallet
+                          {t.auth.importWalletTitle || "Import Wallet"}
                         </>
                       )}
                     </button>
                     <div className="flex items-start gap-2 p-2 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
                       <AlertCircle className="w-3 h-3 text-yellow-400 flex-shrink-0 mt-0.5" />
                       <p className="text-xs text-yellow-400/80">
-                        Never share your seed phrase. KasShi derives your wallet locally and never stores your phrase.
+                        {t.auth.neverShareSeed || "Never share your seed phrase. KasShi derives your wallet locally and never stores your phrase."}
                       </p>
                     </div>
                   </div>
                 )}
                 <p className="text-xs text-gray-500 text-center">
-                  Perfect for mobile wallet users (Kastle, KasWare Mobile)
+                  {t.auth.perfectForMobile}
                 </p>
               </div>
 
@@ -565,7 +586,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
               <div className="flex items-start gap-2 p-3 bg-[#70c7ba]/5 border border-[#70c7ba]/20 rounded-lg">
                 <AlertCircle className="w-4 h-4 text-[#70c7ba] flex-shrink-0 mt-0.5" />
                 <p className="text-xs text-gray-400">
-                  All options let you earn and spend KAS on KasShi with frictionless micropayments.
+                  {t.auth.allOptionsInfo}
                 </p>
               </div>
             </div>
@@ -575,7 +596,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
           {isLoggedIn && walletLoading && (
             <div className="flex flex-col items-center justify-center py-8 gap-3">
               <RefreshCw className="w-8 h-8 text-[#70c7ba] animate-spin" />
-              <p className="text-gray-400 text-sm">Loading your wallet...</p>
+              <p className="text-gray-400 text-sm">{t.auth.loadingWallet || "Loading your wallet..."}</p>
             </div>
           )}
 
@@ -589,14 +610,14 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#70c7ba] opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-[#70c7ba]"></span>
                   </span>
-                  <span className="text-xs font-medium text-[#70c7ba]">Kaspa Mainnet</span>
+                  <span className="text-xs font-medium text-[#70c7ba]">{t.auth.kaspaMainnet || "Kaspa Mainnet"}</span>
                   <Globe className="w-3 h-3 text-[#70c7ba]" />
                 </div>
               </div>
               
               <div className="bg-[#2a2a4a] rounded-xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400 text-sm">Address</span>
+                  <span className="text-gray-400 text-sm">{t.auth.address || "Address"}</span>
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => copyToClipboard(wallet.address)}
@@ -618,7 +639,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                 </div>
                 
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400 text-sm">Balance</span>
+                  <span className="text-gray-400 text-sm">{t.settings.balance || "Balance"}</span>
                   <div className="flex items-center gap-2">
                     <span className="text-white font-bold">{(parseFloat(balance) - (pendingBalance?.pendingDebitsKas || 0)).toFixed(4)} KAS</span>
                     <button
@@ -640,7 +661,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                 >
                   <div className="flex items-center gap-3">
                     <QrCode className="w-5 h-5 text-[#70c7ba]" />
-                    <span className="text-white font-semibold">Deposit via QR Code</span>
+                    <span className="text-white font-semibold">{t.auth.depositViaQR || "Deposit via QR Code"}</span>
                   </div>
                   {showQR ? (
                     <ChevronUp className="w-5 h-5 text-gray-400" />
@@ -662,7 +683,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                       />
                     </div>
                     <p className="text-xs text-gray-400 text-center max-w-[200px]">
-                      Scan with your Kaspa wallet app to send KAS to this address
+                      {t.auth.scanQRDesc || "Scan with your Kaspa wallet app to send KAS to this address"}
                     </p>
                   </div>
                 )}
@@ -671,17 +692,30 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
               {/* Mainnet Info */}
               <div className="bg-[#2a2a4a]/50 rounded-xl p-3">
                 <p className="text-xs text-gray-400 text-center">
-                  This is a real Kaspa mainnet wallet. All transactions use real KAS and are recorded on the blockchain.{" "}
+                  {t.auth.mainnetWalletDesc || "This is a real Kaspa mainnet wallet. All transactions use real KAS and are recorded on the blockchain."}{" "}
                   <a 
                     href="https://kaspa.org" 
                     target="_blank" 
                     rel="noopener noreferrer"
                     className="text-[#70c7ba] hover:underline"
                   >
-                    Learn more about Kaspa →
+                    {t.auth.learnMoreKaspa || "Learn more about Kaspa →"}
                   </a>
                 </p>
               </div>
+
+              {/* Logout Button */}
+              <button
+                onClick={async () => {
+                  await logout();
+                  onClose();
+                  toast.success(t.auth.loggedOut || "Logged out successfully");
+                }}
+                className="w-full p-3 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl font-medium flex items-center justify-center gap-2 hover:bg-red-500/20 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+                {t.auth.logout || "Log Out"}
+              </button>
 
             </div>
           )}
@@ -696,7 +730,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#70c7ba] opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-[#70c7ba]"></span>
                   </span>
-                  <span className="text-xs font-medium text-[#70c7ba]">Kaspa Mainnet</span>
+                  <span className="text-xs font-medium text-[#70c7ba]">{t.auth.kaspaMainnet || "Kaspa Mainnet"}</span>
                   <Globe className="w-3 h-3 text-[#70c7ba]" />
                 </div>
               </div>
@@ -704,14 +738,14 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
               {/* KasShi Wallet (Internal - for micropayments) */}
               <div className="bg-gradient-to-br from-[#70c7ba]/20 to-[#49eacf]/10 border border-[#70c7ba]/40 rounded-xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-[#70c7ba] text-sm font-medium">KasShi Wallet</span>
-                  <span className="text-xs text-[#70c7ba]/70 bg-[#70c7ba]/10 px-2 py-1 rounded">Micropayments</span>
+                  <span className="text-[#70c7ba] text-sm font-medium">{t.auth.kasshiWallet || "KasShi Wallet"}</span>
+                  <span className="text-xs text-[#70c7ba]/70 bg-[#70c7ba]/10 px-2 py-1 rounded">{t.auth.micropayments || "Micropayments"}</span>
                 </div>
                 
                 {externalWallet.internalAddress ? (
                   <>
                     <div className="flex items-center justify-between">
-                      <span className="text-gray-400 text-xs">Address</span>
+                      <span className="text-gray-400 text-xs">{t.auth.address || "Address"}</span>
                       <button
                         onClick={() => copyToClipboard(externalWallet.internalAddress!)}
                         className="flex items-center gap-1 text-[#70c7ba] hover:text-[#49eacf] transition-colors text-xs font-mono"
@@ -721,7 +755,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                       </button>
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-gray-400 text-xs">Balance</span>
+                      <span className="text-gray-400 text-xs">{t.settings.balance || "Balance"}</span>
                       <div className="flex items-center gap-2">
                         <span className="text-white font-bold text-lg">{(parseFloat(internalBalance) - (pendingBalance?.pendingDebitsKas || 0)).toFixed(4)} KAS</span>
                         <button
@@ -735,7 +769,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     </div>
                   </>
                 ) : (
-                  <p className="text-xs text-gray-400">Setting up wallet...</p>
+                  <p className="text-xs text-gray-400">{t.auth.settingUpWallet || "Setting up wallet..."}</p>
                 )}
               </div>
 
@@ -751,7 +785,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     }`}
                   >
                     <ArrowDownToLine className="w-4 h-4" />
-                    Deposit
+                    {t.auth.deposit}
                   </button>
                   <button
                     onClick={() => { setShowWithdraw(!showWithdraw); setShowDeposit(false); }}
@@ -762,7 +796,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     }`}
                   >
                     <ArrowUpFromLine className="w-4 h-4" />
-                    Withdraw
+                    {t.auth.withdraw}
                   </button>
                 </div>
               )}
@@ -771,15 +805,15 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
               {showDeposit && externalWallet.internalAddress && (
                 <div className="bg-[#2a2a4a] border border-[#70c7ba]/30 rounded-xl p-4 space-y-3">
                   <div className="flex justify-between text-xs text-gray-400">
-                    <span>From: {externalWallet.provider === "kastle" ? "Kastle" : "KasWare"}</span>
-                    <span>Available: {parseFloat(externalBalance).toFixed(4)} KAS</span>
+                    <span>{t.auth.fromWallet || "From"}: {externalWallet.provider === "kastle" ? "Kastle" : "KasWare"}</span>
+                    <span>{t.auth.available || "Available"}: {parseFloat(externalBalance).toFixed(4)} KAS</span>
                   </div>
                   <div className="flex gap-2">
                     <input
                       type="number"
                       value={depositAmount}
                       onChange={(e) => setDepositAmount(e.target.value)}
-                      placeholder="Amount (min 0.1)"
+                      placeholder={t.auth.amountMin || "Amount (min 0.1)"}
                       min="0.1"
                       step="0.1"
                       className="flex-1 bg-[#1a1a2e] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-[#70c7ba]"
@@ -788,7 +822,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                       onClick={() => setDepositAmount(Math.max(0, parseFloat(externalBalance) - 0.01).toFixed(4))}
                       className="px-3 py-2 text-xs text-[#70c7ba] hover:bg-[#70c7ba]/10 rounded-lg transition-colors"
                     >
-                      MAX
+                      {t.auth.max || "MAX"}
                     </button>
                   </div>
                   <button
@@ -799,17 +833,17 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     {isProcessing ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        Processing...
+                        {t.video.processing || "Processing..."}
                       </>
                     ) : (
                       <>
                         <ArrowDownToLine className="w-4 h-4" />
-                        Deposit to KasShi
+                        {t.auth.depositToKasShi || "Deposit to KasShi"}
                       </>
                     )}
                   </button>
                   <p className="text-xs text-gray-500 text-center">
-                    Deposits enable frictionless micropayments on KasShi
+                    {t.auth.depositsEnableDesc || "Deposits enable frictionless micropayments on KasShi"}
                   </p>
                 </div>
               )}
@@ -818,15 +852,15 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
               {showWithdraw && externalWallet.internalAddress && (
                 <div className="bg-[#2a2a4a] border border-[#70c7ba]/30 rounded-xl p-4 space-y-3">
                   <div className="flex justify-between text-xs text-gray-400">
-                    <span>From: KasShi Wallet</span>
-                    <span>Available: {parseFloat(internalBalance).toFixed(4)} KAS</span>
+                    <span>{t.auth.fromWallet || "From"}: {t.auth.kasshiWallet || "KasShi Wallet"}</span>
+                    <span>{t.auth.available || "Available"}: {parseFloat(internalBalance).toFixed(4)} KAS</span>
                   </div>
                   <div className="flex gap-2">
                     <input
                       type="number"
                       value={withdrawAmount}
                       onChange={(e) => setWithdrawAmount(e.target.value)}
-                      placeholder="Amount (min 0.1)"
+                      placeholder={t.auth.amountMin || "Amount (min 0.1)"}
                       min="0.1"
                       step="0.1"
                       className="flex-1 bg-[#1a1a2e] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-[#70c7ba]"
@@ -835,7 +869,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                       onClick={() => setWithdrawAmount(Math.max(0, parseFloat(internalBalance) - 0.01).toFixed(4))}
                       className="px-3 py-2 text-xs text-[#70c7ba] hover:bg-[#70c7ba]/10 rounded-lg transition-colors"
                     >
-                      MAX
+                      {t.auth.max || "MAX"}
                     </button>
                   </div>
                   <button
@@ -846,17 +880,17 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                     {isProcessing ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        Processing...
+                        {t.video.processing || "Processing..."}
                       </>
                     ) : (
                       <>
                         <ArrowUpFromLine className="w-4 h-4" />
-                        Withdraw to {externalWallet.provider === "kastle" ? "Kastle" : "KasWare"}
+                        {t.auth.withdrawTo || "Withdraw to"} {externalWallet.provider === "kastle" ? "Kastle" : "KasWare"}
                       </>
                     )}
                   </button>
                   <p className="text-xs text-gray-500 text-center">
-                    Withdraw your earnings to your {externalWallet.provider === "kastle" ? "Kastle" : "KasWare"} wallet
+                    {(t.auth.withdrawEarningsDesc || "Withdraw your earnings to your {wallet} wallet").replace("{wallet}", externalWallet.provider === "kastle" ? "Kastle" : "KasWare")}
                   </p>
                 </div>
               )}
@@ -864,11 +898,11 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
               {/* External Wallet (KasWare/Kastle) */}
               <div className="bg-[#2a2a4a]/50 rounded-xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400 text-sm">{externalWallet.provider === "kastle" ? "Kastle" : "KasWare"} Wallet</span>
-                  <span className="text-xs text-gray-500 bg-gray-700/50 px-2 py-1 rounded">External</span>
+                  <span className="text-gray-400 text-sm">{externalWallet.provider === "kastle" ? "Kastle" : "KasWare"} {t.auth.wallet || "Wallet"}</span>
+                  <span className="text-xs text-gray-500 bg-gray-700/50 px-2 py-1 rounded">{t.auth.external || "External"}</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-500 text-xs">Address</span>
+                  <span className="text-gray-500 text-xs">{t.auth.address || "Address"}</span>
                   <div className="flex items-center gap-1">
                     <button
                       onClick={() => copyToClipboard(externalWallet.address)}
@@ -888,7 +922,7 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                   </div>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-500 text-xs">Balance</span>
+                  <span className="text-gray-500 text-xs">{t.settings.balance || "Balance"}</span>
                   <span className="text-gray-300 font-medium">{parseFloat(externalBalance).toFixed(4)} KAS</span>
                 </div>
               </div>
@@ -898,18 +932,19 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
                 onClick={() => {
                   disconnectExternalWallet();
                   onClose();
-                  toast.success("Wallet disconnected");
+                  toast.success(t.auth.walletDisconnected || "Wallet disconnected");
+                  window.location.href = '/';
                 }}
                 className="w-full p-3 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl font-medium flex items-center justify-center gap-2 hover:bg-red-500/20 transition-colors"
               >
                 <LogOut className="w-4 h-4" />
-                Disconnect Wallet
+                {t.auth.disconnectWallet || "Disconnect Wallet"}
               </button>
               
               {/* Mainnet Info */}
               <div className="bg-[#2a2a4a]/50 rounded-xl p-3">
                 <p className="text-xs text-gray-400 text-center">
-                  Deposit KAS to your KasShi wallet for instant micropayments. Withdraw anytime to your KasWare wallet.
+                  {t.auth.depositWithdrawDesc || "Deposit KAS to your KasShi wallet for instant micropayments. Withdraw anytime to your wallet."}
                 </p>
               </div>
             </div>
@@ -919,13 +954,13 @@ export function WalletModal({ isOpen, onClose }: WalletModalProps) {
           {isLoggedIn && !walletLoading && !isConnected && (
             <div className="flex flex-col items-center justify-center py-8 gap-3">
               <p className="text-gray-400 text-sm text-center">
-                Could not load wallet. Please try refreshing the page.
+                {t.auth.couldNotLoadWallet || "Could not load wallet. Please try refreshing the page."}
               </p>
               <button
                 onClick={() => loadWalletFromAccount()}
                 className="px-4 py-2 bg-[#70c7ba]/20 text-[#70c7ba] rounded-lg hover:bg-[#70c7ba]/30 transition-colors"
               >
-                Try Again
+                {t.common.tryAgain || "Try Again"}
               </button>
             </div>
           )}

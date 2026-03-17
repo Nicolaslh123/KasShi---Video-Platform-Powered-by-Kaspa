@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams } from "react-router-dom";
+import LocalizedLink from "../components/LocalizedLink";
+import { VideoPlayer, VideoPlayerHandle } from "../components/VideoPlayer";
 import Navbar from "../components/Navbar";
+import { useElectronTitleBar } from "../components/ElectronTitleBar";
+
 import { 
   useVideo, 
   useVideoFeed, 
@@ -25,7 +29,7 @@ import {
   CheckCircle,
   Loader2,
   Play,
-  Pause,
+
   MessageSquare,
   ChevronDown,
   ChevronUp,
@@ -35,23 +39,105 @@ import {
   Sparkles,
   Crown,
   Copy,
-  Volume2,
-  Volume1,
-  VolumeX,
-  Maximize,
-  Minimize,
+
   Facebook,
   Flag,
   Trash2,
   Edit3,
-  Settings,
+
   RefreshCw
 } from "lucide-react";
 import toast from "react-hot-toast";
+import { linkifyText } from "../utils/linkify";
 import { SecurityVerificationModal } from "../components/SecurityVerificationModal";
 import { useKasware } from "../hooks/useKasware";
 import { ExternalLink } from "lucide-react";
 import { KaspaIcon } from "../components/KasShiLogo";
+import { useLanguage } from "../contexts/LanguageContext";
+import { AlertCircle } from "lucide-react";
+
+// Encoding overlay component with auto-polling
+function EncodingOverlay({ videoId, onReady }: { videoId: number; onReady: () => void }) {
+  const [progress, setProgress] = useState<number | null>(null);
+  const [statusText, setStatusText] = useState('Preparing...');
+  const { t } = useLanguage();
+  
+  useEffect(() => {
+    let cancelled = false;
+    
+    const pollStatus = async () => {
+      try {
+        // Use the database video endpoint to check if video_url is now set
+        const res = await fetch(`/api/kasshi/videos/${videoId}`);
+        if (!res.ok) return;
+        
+        const data = await res.json();
+        if (cancelled) return;
+        
+        // Video is ready when video_url is set
+        if (data.videoUrl) {
+          onReady();
+          return;
+        }
+        
+        // Update status based on bunny_status
+        const status = data.bunnyStatus;
+        if (status === 'processing' || status === 'transcoding') {
+          setStatusText(t.video?.encoding || 'Encoding video...');
+          setProgress(50); // Approximate progress
+        } else if (status === 'uploaded') {
+          setStatusText(t.video?.processing || 'Processing...');
+          setProgress(25);
+        } else {
+          setStatusText(t.video?.preparing || 'Preparing...');
+          setProgress(10);
+        }
+        
+        // Continue polling every 5 seconds
+        if (!cancelled) {
+          setTimeout(pollStatus, 5000);
+        }
+      } catch (err) {
+        console.error('[BUNNY] Status poll error:', err);
+        if (!cancelled) {
+          setTimeout(pollStatus, 10000);
+        }
+      }
+    };
+    
+    pollStatus();
+    
+    return () => { cancelled = true; };
+  }, [videoId, onReady, t]);
+  
+  return (
+    <div className="absolute inset-0 bg-gradient-to-t from-black via-black/80 to-black/60 flex flex-col items-center justify-center p-6">
+      <div className="w-20 h-20 rounded-full bg-gradient-to-br from-amber-500/30 to-orange-500/30 backdrop-blur-sm flex items-center justify-center mb-6 border border-amber-500/50">
+        <Loader2 className="w-10 h-10 text-amber-400 animate-spin" />
+      </div>
+      
+      <h2 className="text-2xl font-bold text-white text-center mb-2">
+        {t.video?.videoProcessing || 'Video Processing'}
+      </h2>
+      <p className="text-slate-400 mb-4 text-center max-w-md">
+        {statusText}
+      </p>
+      
+      {progress !== null && (
+        <div className="w-64 h-2 bg-slate-700 rounded-full overflow-hidden mb-4">
+          <div 
+            className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-500"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      )}
+      
+      <p className="text-slate-500 text-sm text-center">
+        {t.video?.autoRefresh || 'This page will refresh automatically when ready'}
+      </p>
+    </div>
+  );
+}
 
 // Fee constants - small utility actions are batched via Merkle tree
 // Duration-based view pricing (all tiers above 0.11 KAS to avoid KIP-9 storage mass limit)
@@ -61,6 +147,23 @@ function getViewCostForDuration(durationSeconds: number): number {
   if (minutes >= 20) return 0.20; // 20-29 min
   if (minutes >= 10) return 0.15; // 10-19 min
   return 0.11; // Under 10 min
+}
+
+// Helper to check if a video is free (priceKas = 0 or null/undefined)
+function isVideoFree(priceKas: string | null | undefined): boolean {
+  if (!priceKas) return true;
+  const price = parseFloat(priceKas);
+  return isNaN(price) || price === 0;
+}
+
+// Get actual video price - use priceKas if set, otherwise duration-based
+function getVideoPrice(video: { priceKas?: string; durationSeconds?: number }): number {
+  if (video.priceKas) {
+    const price = parseFloat(video.priceKas);
+    if (!isNaN(price) && price > 0) return price;
+  }
+  // Fallback to duration-based pricing only if no explicit price
+  return getViewCostForDuration(video.durationSeconds || 0);
 }
 const PAYMENT_VALIDITY_HOURS = 1;
 
@@ -159,6 +262,7 @@ function CommentItem({
   localCommentCounts,
   currentUserChannelId,
 }: CommentItemProps) {
+  const { t } = useLanguage();
   const c = comment;
   const maxIndent = 4; // Max visual indent level
   const visualDepth = Math.min(depth, maxIndent);
@@ -218,7 +322,7 @@ function CommentItem({
               className="flex items-center gap-1 text-slate-400 hover:text-teal-400 transition-colors text-xs"
             >
               <MessageSquare className="w-3 h-3" />
-              Reply
+              {t.video?.reply || 'Reply'}
             </button>
             {currentUserChannelId === c.author.id && (
               <button 
@@ -232,7 +336,7 @@ function CommentItem({
                 ) : (
                   <Trash2 className="w-3 h-3" />
                 )}
-                Delete
+                {t.common.delete || 'Delete'}
               </button>
             )}
           </div>
@@ -260,7 +364,7 @@ function CommentItem({
                     onClick={() => { setReplyingTo(null); setReplyText(""); }}
                     className="px-3 py-1.5 text-xs text-slate-400 hover:text-white transition-colors"
                   >
-                    Cancel
+                    {t.common.cancel || 'Cancel'}
                   </button>
                   <button 
                     type="submit"
@@ -272,7 +376,7 @@ function CommentItem({
                     ) : (
                       <Send className="w-3 h-3" />
                     )}
-                    Reply
+                    {t.video?.reply || 'Reply'}
                   </button>
                 </div>
               </div>
@@ -303,7 +407,7 @@ function CommentItem({
             ) : (
               <ChevronDown className="w-4 h-4" />
             )}
-            {c.replies.length} {c.replies.length === 1 ? "reply" : "replies"}
+            {c.replies.length} {c.replies.length === 1 ? (t.video?.reply || "reply") : (t.video?.replies || "replies")}
           </button>
           
           {expandedReplies.has(c.id) && (
@@ -349,9 +453,14 @@ export default function Watch() {
   const { pay, isExternalWallet } = usePayment();
   const { user, redirectToLogin } = useAuth();
   const kasware = useKasware();
+  const { t } = useLanguage();
+  const { titleBarPadding } = useElectronTitleBar();
   const balance = balanceStr !== null ? parseFloat(balanceStr) : null;
   
   // Unified payment function that handles both internal and external wallets
+  // External wallets with internal custody (Kastle, etc.) use micropay via internal wallet
+  const hasInternalCustody = !!(externalWallet?.internalAddress && externalWallet?.authToken);
+  
   const unifiedPay = useCallback(async (
     toAddress: string,
     amount: number,
@@ -360,8 +469,8 @@ export default function Watch() {
     recipientChannelId?: number,
     commentId?: number
   ) => {
-    if (isExternalWallet) {
-      // Use KasWare for external wallet payments
+    if (isExternalWallet && !hasInternalCustody) {
+      // Use KasWare for pure external wallet payments (no internal custody)
       return pay(toAddress, amount, {
         videoId: videoIdParam,
         paymentType,
@@ -369,10 +478,10 @@ export default function Watch() {
         commentId,
       });
     } else {
-      // Use internal micropay
+      // Use internal micropay for internal wallets AND external wallets with internal custody
       return micropay(toAddress, amount, videoIdParam, paymentType, recipientChannelId, commentId);
     }
-  }, [isExternalWallet, pay, micropay]);
+  }, [isExternalWallet, hasInternalCustody, pay, micropay]);
   
   // Fee constants - external wallets need 0.1 KAS minimum (KIP-9), internal wallets batch small amounts
   // Micropayment fees - batched for all wallet types until settlement threshold
@@ -427,6 +536,7 @@ export default function Watch() {
   const [isReporting, setIsReporting] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   
+  // Channel leaderboard state
   // Click outside handler for dropdown menus
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -453,6 +563,10 @@ export default function Watch() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [_remainingTime, setRemainingTime] = useState<string | null>(null);
   
+  // Preload state for free videos - gives Brave browser time to establish connections
+  const [isPreloading, setIsPreloading] = useState(false);
+  const preloadVideoRef = useRef<HTMLVideoElement | null>(null);
+  
   // Reset state when navigating to a different video
   useEffect(() => {
     paymentInProgressRef.current = false;
@@ -469,9 +583,14 @@ export default function Watch() {
     setLocalCommentCounts({});
     setCurrentProgress(0);
     setSavedProgress(null);
-    setVideoError(null);
-    setIsBuffering(false);
     setVideoAspectRatio("16/9");
+    setIsPreloading(false);
+    // Clean up preload video element
+    if (preloadVideoRef.current) {
+      preloadVideoRef.current.src = "";
+      preloadVideoRef.current = null;
+    }
+    seekRecoveryAttemptRef.current = 0;
   }, [videoId]);
   
   // Membership state for members-only videos
@@ -485,53 +604,80 @@ export default function Watch() {
   // Watch progress state
   const [currentProgress, setCurrentProgress] = useState(0);
   const [savedProgress, setSavedProgress] = useState<number | null>(null);
-  const [bufferedPercent, setBufferedPercent] = useState(0);
+  const [_bufferedPercent] = useState(0);
   const lastSavedProgressRef = useRef(0);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  const playerRef = useRef<VideoPlayerHandle | null>(null);
   const paymentInProgressRef = useRef(false);
+  const durationFixedRef = useRef(false);
+  const thumbnailFixedRef = useRef(false);
   
-  // Playback controls
-  const [playbackSpeed, setPlaybackSpeed] = useState(1);
-  const [showSpeedMenu, setShowSpeedMenu] = useState(false);
-  const [volume, setVolume] = useState(() => {
+  // YouTube-style view tracking: count view after 30 seconds or 30% watched
+  const viewRecordedRef = useRef(false);
+  const lastTimeRef = useRef(0);
+  const seekRecoveryAttemptRef = useRef<number>(0);
+  
+  // Track if we've already processed payment/unlock for this video to prevent re-runs
+  const paymentProcessedForVideoRef = useRef<string | null>(null);
+  
+  // Initial volume settings (passed to VideoPlayer)
+  const [initialVolume] = useState(() => {
     const savedVolume = localStorage.getItem("kasshi_volume");
     return savedVolume ? parseFloat(savedVolume) : 1;
   });
-  const [isMuted, setIsMuted] = useState(() => {
+  const [initialMuted] = useState(() => {
     return localStorage.getItem("kasshi_muted") === "true";
   });
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const playerContainerRef = useRef<HTMLDivElement | null>(null);
-  
-  // Quality controls
-  const [showQualityMenu, setShowQualityMenu] = useState(false);
-  const [videoQuality, setVideoQuality] = useState<string>("Auto");
-  const [nativeResolution, setNativeResolution] = useState<{ width: number; height: number } | null>(null);
-  
-  // Progress bar dragging
-  const [isDragging, setIsDragging] = useState(false);
-  const progressBarRef = useRef<HTMLDivElement | null>(null);
   
 
   
-  // Video error state - for antivirus/blocking issues
-  const [videoError, setVideoError] = useState<string | null>(null);
   const [videoAspectRatio, setVideoAspectRatio] = useState<string>("16/9");
-  // Video buffering state - for large video loading indicator
-  const [isBuffering, setIsBuffering] = useState(false);
 
-
-  // Buffering timeout - auto-clear after 15 seconds to prevent stuck state
+  // Brave browser recovery: detect when video track is stuck after seeking
+  // Symptoms: audio plays (currentTime advances) but video shows poster/black
+  // Brave browser fingerprinting protection recovery - ONE-TIME check only, no polling
+  // This runs once when video starts playing if dimensions are 0 (Brave blocks videoWidth/Height)
   useEffect(() => {
-    if (!isBuffering || !isPlaying) return;
+    const vid = playerRef.current?.getVideoElement();
+    if (!vid || !isPlaying) return;
     
-    const timeout = setTimeout(() => {
-      console.log("Buffering timeout - clearing stuck buffering state");
-      setIsBuffering(false);
-    }, 15000);
+    // If we already have valid dimensions, no recovery needed
+    if (vid.videoWidth > 0 && vid.videoHeight > 0) return;
     
-    return () => clearTimeout(timeout);
-  }, [isBuffering, isPlaying]);
+    // Already attempted recovery for this session
+    if (seekRecoveryAttemptRef.current >= 1) return;
+    
+    // One-time check after 3 seconds - if video is playing but still shows 0 dimensions,
+    // try a single recovery. No continuous polling.
+    const timeoutId = setTimeout(() => {
+      const video = playerRef.current?.getVideoElement();
+      if (!video || video.paused) return;
+      
+      const hasVideoTrack = video.videoWidth > 0 && video.videoHeight > 0;
+      const isTimeAdvancing = video.currentTime > 0.5;
+      
+      // Video is playing (time advancing) but no video track visible
+      if (isTimeAdvancing && !hasVideoTrack && seekRecoveryAttemptRef.current < 1) {
+        seekRecoveryAttemptRef.current++;
+        console.log("[Brave Recovery] Attempting one-time video track recovery...");
+        
+        const savedTime = video.currentTime;
+        const savedSrc = video.src;
+        video.pause();
+        video.src = '';
+        video.load();
+        
+        setTimeout(() => {
+          video.src = savedSrc;
+          video.load();
+          video.currentTime = savedTime;
+          video.play().catch(console.error);
+        }, 100);
+      }
+    }, 3000);
+    
+    return () => clearTimeout(timeoutId);
+  }, [isPlaying]);
 
   // Update local counts when video loads
   useEffect(() => {
@@ -541,6 +687,13 @@ export default function Watch() {
       setLocalViewCount(video.viewCount);
     }
   }, [video]);
+  
+  // Reset refs when video changes
+  useEffect(() => {
+    viewRecordedRef.current = false;
+    lastTimeRef.current = 0;
+    paymentProcessedForVideoRef.current = null;
+  }, [videoId]);
   
   // Check subscription status
   useEffect(() => {
@@ -639,24 +792,7 @@ export default function Watch() {
     fetchCommentInteractions();
   }, [videoId, channel?.id, externalWallet?.userId]);
   
-  // Debug: Log when key states change
-  useEffect(() => {
-    console.log("[Watch] Key state change detected:", {
-      videoId,
-      hasVideo: !!video,
-      videoTitle: video?.title,
-      isConnected,
-      hasWallet: !!wallet,
-      hasExternalWallet: !!externalWallet,
-      paymentState,
-      videoCanRender: !!(video?.videoUrl && paymentState === "unlocked"),
-    });
-  }, [video, isConnected, wallet, externalWallet, videoId, paymentState]);
-  
-  // Debug: Log whenever paymentState specifically changes
-  useEffect(() => {
-    console.log(`[Watch] PAYMENT STATE CHANGED TO: ${paymentState}`);
-  }, [paymentState]);
+
   
   // Track previous video state to detect when video loads
   const prevVideoRef = useRef<typeof video>(null);
@@ -664,116 +800,100 @@ export default function Watch() {
   // Auto-pay when video loads (seamless background payment)
   useEffect(() => {
     const autoPayForVideo = async () => {
-      // Log when video transitions from null to available
-      if (!prevVideoRef.current && video) {
-        console.log("[Watch] VIDEO DATA NOW AVAILABLE - triggering payment flow");
-      }
-      prevVideoRef.current = video;
-      
-      console.log("[Watch] autoPayForVideo triggered", {
-        videoId,
-        hasVideo: !!video,
-        videoTitle: video?.title,
-        isConnected,
-        hasWallet: !!wallet,
-        hasExternalWallet: !!externalWallet,
-        externalWalletProvider: externalWallet?.provider,
-        externalWalletAddress: externalWallet?.address,
-        externalWalletInternalAddress: externalWallet?.internalAddress,
-        balance,
-        channelId: channel?.id,
-        videoChannelId: video?.channel?.id,
-        userId: user?.id,
-        paymentInProgress: paymentInProgressRef.current,
-        currentPaymentState: paymentState,
-      });
-      
       if (!videoId || !video) {
-        console.log("[Watch] Early return: missing videoId or video", { videoId, video });
         return;
       }
+      
+      // Prevent re-running for the same video once processed
+      if (paymentProcessedForVideoRef.current === videoId) {
+        return;
+      }
+      
+      prevVideoRef.current = video;
+      
+      // FREE VIDEO - unlock immediately and record view on load
+      if (isVideoFree(video.priceKas)) {
+        paymentProcessedForVideoRef.current = videoId;
+        setIsPreloading(false);
+        setPaymentState("unlocked");
+        setRemainingTime(null);
+        
+        // Record view immediately for free videos (every page load counts)
+        // Skip session check - free videos count every load since there's no payment
+        if (!viewRecordedRef.current) {
+          viewRecordedRef.current = true;
+          fetch(`/api/kasshi/videos/${videoId}/view`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              viewerChannelId: channel?.id || null,
+              transactionId: null,
+              amount: 0,
+              userId: externalWallet?.userId || user?.id,
+            }),
+          }).then(() => {
+            setLocalViewCount((prev) => prev + 1);
+          }).catch(() => {});
+        }
+        return;
+      }
+      
+      // PAID VIDEO - require wallet connection and payment
       
       // CRITICAL: Wait for wallet state to be fully restored from localStorage
       // This prevents race condition where payment check runs before externalWallet is loaded
       if (walletLoading) {
-        console.log("[Watch] Early return: wallet still loading");
+
         return;
       }
       
       // Additional check: if localStorage has external wallet but state doesn't, wait for sync
       const storedExternalWallet = localStorage.getItem("kasshi_external_wallet");
       if (storedExternalWallet && !externalWallet) {
-        console.log("[Watch] Early return: external wallet in localStorage but not yet in state");
+
         return;
       }
       
-      // Video owner watches for free (but still record view for history)
+      // Video owner watches for free
+      // View will be recorded via handleTimeUpdate after 30 sec / 30% watch time (YouTube-style)
       if (channel && video.channel?.id === channel.id) {
-        console.log("[Watch] UNLOCKING: User is channel owner", { channelId: channel.id, videoChannelId: video.channel?.id });
+
+        paymentProcessedForVideoRef.current = videoId;
         setPaymentState("unlocked");
         setRemainingTime(null);
-        // Record view without payment for history/stats
-        try {
-          await fetch(`/api/kasshi/videos/${videoId}/view`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              viewerChannelId: channel.id,
-              transactionId: null,
-              amount: 0,
-              userId: externalWallet?.userId || user?.id,
-            }),
-          });
-        } catch (e) {
-          // Silently fail - owner watching their own video
-        }
         return;
       }
       
       // Already paid within validity period (user-specific)
       // For external wallets, use external userId to avoid matching internal wallet payments
       const paymentUserId = externalWallet?.userId || user?.id;
-      console.log("[Watch] Checking payment validity", { 
-        videoId, 
-        paymentUserId, 
-        externalWalletUserId: externalWallet?.userId,
-        authUserId: user?.id,
-        hasExternalWallet: !!externalWallet,
-      });
       if (isPaymentValid(videoId, paymentUserId)) {
-        console.log("[Watch] UNLOCKING: Payment already valid in localStorage", { videoId, paymentUserId });
+
+        paymentProcessedForVideoRef.current = videoId;
         setPaymentState("unlocked");
         setRemainingTime(getRemainingTime(videoId, paymentUserId));
         return;
       }
-      console.log("[Watch] Payment NOT valid, proceeding to payment flow");
+
       
       // CRITICAL: Prevent multiple payment attempts
       // This ref guards against race conditions when balance updates trigger re-renders
       if (paymentInProgressRef.current) {
-        console.log("[Watch] Early return: payment already in progress");
+
         return;
       }
       
-      // Not connected - require login to watch
+      // Not connected - require login to watch PAID videos
       // Support both internal wallets and external wallets (KasWare/Kastle)
       const hasWalletConnection = isConnected && (wallet || externalWallet);
-      console.log("[Watch] Wallet connection check:", {
-        isConnected,
-        hasWallet: !!wallet,
-        hasExternalWallet: !!externalWallet,
-        hasWalletConnection,
-      });
-      
       if (!hasWalletConnection) {
-        console.log("[Watch] No wallet connection - setting locked state");
         setPaymentState("locked");
         return;
       }
       
       // Insufficient balance - keep locked and show message
-      const viewCost = getViewCostForDuration(video.durationSeconds || 0);
-      console.log("[Watch] Balance check:", { balance, viewCost, isBalanceNull: balance === null });
+      const viewCost = getVideoPrice(video);
+
       if (balance !== null && balance < viewCost) {
         setPaymentState("locked");
         toast.error(`Insufficient balance. You need ${viewCost} KAS to watch this video.`, { duration: 5000 });
@@ -793,12 +913,12 @@ export default function Watch() {
       paymentInProgressRef.current = true;
       
       // Process payment
-      console.log("[Watch] Processing payment:", { creatorAddress, viewCost, videoId, channelId: video.channel.id });
+
       setPaymentState("paying");
       
       try {
         const txResult = await unifiedPay(creatorAddress, viewCost, videoId, "view", video.channel.id);
-        console.log("[Watch] Payment result:", txResult);
+
         
         if (txResult.success) {
           // Record the view
@@ -813,11 +933,27 @@ export default function Watch() {
             }),
           });
           
+          // Track referral watch progress (non-blocking) - view payment = 30+ sec watch
+          if (video.durationSeconds && video.durationSeconds >= 30) {
+            const referralHeaders: HeadersInit = { "Content-Type": "application/json" };
+            if (externalWallet?.authToken) {
+              referralHeaders["Authorization"] = `Bearer ${externalWallet.authToken}`;
+            }
+            fetch("/api/referral/track-watch", {
+              method: "POST",
+              headers: referralHeaders,
+              credentials: "include",
+              body: JSON.stringify({ videoId: parseInt(videoId) }),
+            }).catch(() => {}); // Silent fail
+          }
+          
           // Use same paymentUserId for saving as we use for checking
           const saveUserId = externalWallet?.userId || user?.id;
           savePaidVideo(videoId, saveUserId);
           setRemainingTime(getRemainingTime(videoId, saveUserId));
           setLocalViewCount(prev => prev + 1);
+          paymentInProgressRef.current = false; // Reset after successful payment
+          paymentProcessedForVideoRef.current = videoId;
           setPaymentState("unlocked");
         } else if (txResult.needsConsolidation) {
           toast.error("Your wallet has too many small transactions. Please consolidate your wallet in Settings.", { duration: 6000 });
@@ -837,6 +973,7 @@ export default function Watch() {
     };
     
     autoPayForVideo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoId, video, isConnected, wallet, externalWallet, balance, micropay, channel?.id, user?.id, channel, video?.channel?.id, walletLoading]);
   
   // Check membership access for members-only videos
@@ -920,212 +1057,189 @@ export default function Watch() {
   }, [videoId, channel?.id]);
   
   // Video event handlers
-  const handleTimeUpdate = () => {
-    if (videoRef.current) {
-      setCurrentProgress(Math.floor(videoRef.current.currentTime));
+  // YouTube-style view recording: count after 30 seconds or 30% watched
+  const recordViewIfEligible = useCallback(async () => {
+    if (!video || !videoId || viewRecordedRef.current) return;
+    
+    // Check sessionStorage to prevent duplicate views in same session
+    const sessionKey = `kasshi_viewed_${videoId}`;
+    if (sessionStorage.getItem(sessionKey)) {
+      viewRecordedRef.current = true;
+      return;
     }
-  };
+    
+    viewRecordedRef.current = true;
+    sessionStorage.setItem(sessionKey, "true");
+    
+    // Record view for stats
+    try {
+      await fetch(`/api/kasshi/videos/${videoId}/view`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          viewerChannelId: channel?.id || null,
+          transactionId: null,
+          amount: 0,
+          userId: externalWallet?.userId || user?.id,
+        }),
+      });
+      // Update local view count for immediate UI feedback
+      setLocalViewCount((prev) => prev + 1);
+    } catch (e) {
+      // Silent fail
+    }
+    
+    // Track referral watch progress (non-blocking) for videos 30+ sec
+    if (video.durationSeconds && video.durationSeconds >= 30) {
+      const referralHeaders: HeadersInit = { "Content-Type": "application/json" };
+      if (externalWallet?.authToken) {
+        referralHeaders["Authorization"] = `Bearer ${externalWallet.authToken}`;
+      }
+      fetch("/api/referral/track-watch", {
+        method: "POST",
+        headers: referralHeaders,
+        credentials: "include",
+        body: JSON.stringify({ videoId: parseInt(videoId) }),
+      }).catch(() => {}); // Silent fail
+    }
+  }, [video, videoId, channel?.id, externalWallet?.userId, externalWallet?.authToken, user?.id]);
   
-  const handleVideoPlay = () => setIsPlaying(true);
-  const handleVideoPause = () => {
-    setIsPlaying(false);
-    setIsBuffering(false);
-  };
-  const handleVideoEnded = () => setIsPlaying(false);
-  
-  const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      // Restore saved progress
-      if (savedProgress && savedProgress > 0) {
-        videoRef.current.currentTime = savedProgress;
+  // Auto-fix missing thumbnail by capturing a frame from the video
+  const autoFixThumbnail = useCallback(async () => {
+    if (
+      !video ||
+      !videoId ||
+      thumbnailFixedRef.current ||
+      video.thumbnailUrl // Already has thumbnail
+    ) {
+      return;
+    }
+    
+    const vid = playerRef.current?.getVideoElement();
+    if (!vid || vid.videoWidth === 0 || vid.videoHeight === 0) {
+      return;
+    }
+    
+    thumbnailFixedRef.current = true;
+    
+    try {
+      // Seek to 2 seconds or 10% of duration, whichever is smaller
+      const targetTime = Math.min(2, (vid.duration || 10) * 0.1);
+      const originalTime = vid.currentTime;
+      vid.currentTime = targetTime;
+      
+      // Wait for seek to complete
+      await new Promise<void>((resolve) => {
+        const onSeeked = () => {
+          vid.removeEventListener("seeked", onSeeked);
+          resolve();
+        };
+        vid.addEventListener("seeked", onSeeked);
+        // Timeout fallback
+        setTimeout(resolve, 1000);
+      });
+      
+      // Capture frame to canvas
+      const canvas = document.createElement("canvas");
+      canvas.width = vid.videoWidth;
+      canvas.height = vid.videoHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        vid.currentTime = originalTime;
+        return;
       }
       
-      // Apply saved volume and mute settings
-      videoRef.current.volume = volume;
-      videoRef.current.muted = isMuted;
-      
-      // Detect native video resolution for quality display
-      const width = videoRef.current.videoWidth;
-      const height = videoRef.current.videoHeight;
-      if (width && height) {
-        setNativeResolution({ width, height });
-        // Set quality label based on height
-        if (height >= 2160) setVideoQuality("4K");
-        else if (height >= 1440) setVideoQuality("1440p");
-        else if (height >= 1080) setVideoQuality("1080p");
-        else if (height >= 720) setVideoQuality("720p");
-        else if (height >= 480) setVideoQuality("480p");
-        else if (height >= 360) setVideoQuality("360p");
-        else setVideoQuality(`${height}p`);
+      try {
+        ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+      } catch (err) {
+        // CORS error - video may be from different origin or browser blocked access
+        console.error("Cannot capture video frame - CORS restriction:", err);
+        vid.currentTime = originalTime;
+        return;
       }
-    }
-  };
-  
-  const togglePlay = () => {
-    if (videoRef.current) {
-      if (isPlaying) {
-        videoRef.current.pause();
-      } else {
-        videoRef.current.play().catch((err) => {
-          console.error("Play failed:", err);
-          // Some browsers require muted autoplay - try muted as fallback
-          if (videoRef.current) {
-            videoRef.current.muted = true;
-            videoRef.current.play().catch(() => {
-              toast.error("Unable to play video. Try clicking the video directly.");
-            });
-          }
+      
+      // Restore original position
+      vid.currentTime = originalTime;
+      
+      // Convert to blob
+      let blob: Blob | null = null;
+      try {
+        blob = await new Promise<Blob | null>((resolve) => {
+          canvas.toBlob(resolve, "image/jpeg", 0.85);
         });
+      } catch (err) {
+        console.error("Cannot create thumbnail blob - canvas tainted:", err);
+        return;
       }
-    }
-  };
-  
-  // Seek to position given a clientX coordinate
-  const seekToPosition = (clientX: number) => {
-    if (!videoRef.current || !video || !progressBarRef.current) return;
-    const rect = progressBarRef.current.getBoundingClientRect();
-    const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    const duration = videoRef.current.duration || video.durationSeconds || 600;
-    const newTime = percent * duration;
-    videoRef.current.currentTime = newTime;
-    setCurrentProgress(Math.floor(newTime));
-  };
-  
-  // Progress bar drag handlers
-  const handleProgressMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDragging(true);
-    seekToPosition(e.clientX);
-  };
-  
-  const handleProgressTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
-    setIsDragging(true);
-    if (e.touches.length > 0) {
-      seekToPosition(e.touches[0].clientX);
-    }
-  };
-  
-  // Global mouse/touch move and up handlers for dragging
-  useEffect(() => {
-    if (!isDragging) return;
-    
-    const handleMouseMove = (e: MouseEvent) => {
-      seekToPosition(e.clientX);
-    };
-    
-    const handleMouseUp = () => {
-      setIsDragging(false);
-    };
-    
-    const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length > 0) {
-        seekToPosition(e.touches[0].clientX);
+      
+      if (!blob) {
+        console.error("Failed to create thumbnail blob");
+        return;
       }
-    };
-    
-    const handleTouchEnd = () => {
-      setIsDragging(false);
-    };
-    
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-    document.addEventListener('touchmove', handleTouchMove);
-    document.addEventListener('touchend', handleTouchEnd);
-    
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.removeEventListener('touchmove', handleTouchMove);
-      document.removeEventListener('touchend', handleTouchEnd);
-    };
-  }, [isDragging, video]);
-  
-  const changePlaybackSpeed = (speed: number) => {
-    if (videoRef.current) {
-      videoRef.current.playbackRate = speed;
-    }
-    setPlaybackSpeed(speed);
-    setShowSpeedMenu(false);
-  };
-  
-  const toggleMute = () => {
-    const newMuted = !isMuted;
-    if (videoRef.current) {
-      videoRef.current.muted = newMuted;
-    }
-    setIsMuted(newMuted);
-    localStorage.setItem("kasshi_muted", String(newMuted));
-  };
-  
-  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newVolume = parseFloat(e.target.value);
-    if (videoRef.current) {
-      videoRef.current.volume = newVolume;
-      videoRef.current.muted = newVolume === 0;
-    }
-    setVolume(newVolume);
-    setIsMuted(newVolume === 0);
-    // Persist volume settings
-    localStorage.setItem("kasshi_volume", String(newVolume));
-    localStorage.setItem("kasshi_muted", String(newVolume === 0));
-  };
-  
-  const toggleFullscreen = async () => {
-    const videoElement = videoRef.current;
-    const container = playerContainerRef.current;
-    if (!container) return;
-    
-    // Check current fullscreen state (with webkit prefix for iOS)
-    const isCurrentlyFullscreen = !!(
-      document.fullscreenElement || 
-      (document as any).webkitFullscreenElement
-    );
-    
-    if (!isCurrentlyFullscreen) {
-      // Try to enter fullscreen
-      try {
-        // On mobile, prefer video element fullscreen for native controls
-        if (videoElement && (videoElement as any).webkitEnterFullscreen) {
-          // iOS Safari - use video element's native fullscreen
-          await (videoElement as any).webkitEnterFullscreen();
-        } else if (container.requestFullscreen) {
-          await container.requestFullscreen();
-        } else if ((container as any).webkitRequestFullscreen) {
-          // Safari desktop fallback
-          await (container as any).webkitRequestFullscreen();
+      
+      // Upload to fix-thumbnail endpoint
+      const formData = new FormData();
+      formData.append("file", blob, "thumbnail.jpg");
+      
+      const res = await fetch(`/api/kasshi/videos/${videoId}/fix-thumbnail`, {
+        method: "POST",
+        body: formData,
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        if (data.updated) {
+          console.log("Auto-fixed video thumbnail");
+          refetchVideo();
         }
-        setIsFullscreen(true);
-      } catch (error) {
-        console.error("Fullscreen request failed:", error);
       }
-    } else {
-      // Exit fullscreen
-      try {
-        if (document.exitFullscreen) {
-          await document.exitFullscreen();
-        } else if ((document as any).webkitExitFullscreen) {
-          await (document as any).webkitExitFullscreen();
-        }
-        setIsFullscreen(false);
-      } catch (error) {
-        console.error("Exit fullscreen failed:", error);
-      }
+    } catch (err) {
+      console.error("Failed to auto-fix thumbnail:", err);
     }
-  };
+  }, [video, videoId, refetchVideo]);
   
-  // Listen for fullscreen changes (with webkit prefix support)
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      const isFS = !!(document.fullscreenElement || (document as any).webkitFullscreenElement);
-      setIsFullscreen(isFS);
-    };
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
-    };
+  // Stable VideoPlayer callbacks - prevents memo() from being invalidated
+  const handleVideoTimeUpdate = useCallback((currentTime: number) => {
+    const flooredTime = Math.floor(currentTime);
+    if (flooredTime !== lastTimeRef.current) {
+      lastTimeRef.current = flooredTime;
+      setCurrentProgress(flooredTime);
+    }
   }, []);
+  
+  const handleViewThresholdReached = useCallback(() => {
+    if (!viewRecordedRef.current) {
+      viewRecordedRef.current = true;
+      recordViewIfEligible();
+    }
+  }, [recordViewIfEligible]);
+  
+  const handleLoadedMetadata = useCallback((duration: number) => {
+    // Auto-fix duration if needed
+    if (
+      video &&
+      videoId &&
+      !durationFixedRef.current &&
+      (!video.durationSeconds || video.durationSeconds === 0) &&
+      duration > 0
+    ) {
+      durationFixedRef.current = true;
+      fetch(`/api/kasshi/videos/${videoId}/fix-duration`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ durationSeconds: Math.floor(duration) }),
+      }).then(res => {
+        if (res.ok) refetchVideo();
+      }).catch(() => {});
+    }
+    // Auto-fix thumbnail
+    autoFixThumbnail();
+  }, [video, videoId, refetchVideo, autoFixThumbnail]);
+  
+  const handlePlayStateChange = useCallback((playing: boolean) => {
+    setIsPlaying(playing);
+  }, []);
+
   
   // Keyboard shortcuts for video player
   useEffect(() => {
@@ -1135,29 +1249,29 @@ export default function Watch() {
         return;
       }
       
-      if (!videoRef.current) return;
+      const player = playerRef.current;
+      if (!player) return;
+      
+      const videoEl = player.getVideoElement();
+      if (!videoEl) return;
       
       switch (e.code) {
         case 'Space':
           e.preventDefault();
-          if (videoRef.current.paused) {
-            videoRef.current.play().catch(console.error);
-            setIsPlaying(true);
+          if (videoEl.paused) {
+            player.play().catch(console.error);
           } else {
-            videoRef.current.pause();
-            setIsPlaying(false);
+            player.pause();
           }
           break;
         case 'ArrowLeft':
           e.preventDefault();
-          videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 5);
-          setCurrentProgress(Math.floor(videoRef.current.currentTime));
+          player.seek(Math.max(0, videoEl.currentTime - 5));
           break;
         case 'ArrowRight':
           e.preventDefault();
-          const duration = videoRef.current.duration || video?.durationSeconds || 600;
-          videoRef.current.currentTime = Math.min(duration, videoRef.current.currentTime + 5);
-          setCurrentProgress(Math.floor(videoRef.current.currentTime));
+          const duration = videoEl.duration || video?.durationSeconds || 600;
+          player.seek(Math.min(duration, videoEl.currentTime + 5));
           break;
       }
     };
@@ -1167,24 +1281,36 @@ export default function Watch() {
   }, [video?.durationSeconds]);
   
   // Save progress periodically (every 10 seconds) and on unmount
+  // Use ref to access current progress without causing effect re-runs
+  const currentProgressRef = useRef(currentProgress);
+  currentProgressRef.current = currentProgress;
+  
   useEffect(() => {
     const saveProgress = async () => {
-      if (!videoId || !channel?.id || currentProgress === 0) return;
-      if (currentProgress === lastSavedProgressRef.current) return;
+      const progress = currentProgressRef.current;
+      // Allow saving progress if user has either a channel OR is logged in (external wallet)
+      const hasIdentity = channel?.id || externalWallet?.userId || user?.id;
+      if (!videoId || !hasIdentity || progress === 0) return;
+      if (progress === lastSavedProgressRef.current) return;
       
       try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (externalWallet?.authToken) {
+          headers["Authorization"] = `Bearer ${externalWallet.authToken}`;
+        }
+        
         await fetch(`/api/kasshi/videos/${videoId}/progress`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           credentials: "include",
           body: JSON.stringify({
-            channelId: channel?.id,
-            userId: user?.id,
-            progressSeconds: currentProgress,
+            channelId: channel?.id || null,
+            userId: externalWallet?.userId || user?.id || null,
+            progressSeconds: progress,
             durationSeconds: video?.durationSeconds || 600,
           }),
         });
-        lastSavedProgressRef.current = currentProgress;
+        lastSavedProgressRef.current = progress;
       } catch (error) {
         console.error("Failed to save progress:", error);
       }
@@ -1198,7 +1324,7 @@ export default function Watch() {
       clearInterval(interval);
       saveProgress();
     };
-  }, [videoId, channel?.id, currentProgress, video?.durationSeconds]);
+  }, [videoId, channel?.id, video?.durationSeconds, externalWallet?.authToken, externalWallet?.userId, user?.id]);
 
   // KasWare connection handler for Watch page
   const handleKaswareConnect = async () => {
@@ -1955,7 +2081,7 @@ export default function Watch() {
 
   if (videoLoading) {
     return (
-      <div className="min-h-screen w-full bg-slate-950 flex flex-col">
+      <div className={`min-h-screen w-full bg-slate-950 flex flex-col ${titleBarPadding}`}>
         <Navbar />
         <div className="flex items-center justify-center pt-40">
           <Loader2 className="w-8 h-8 text-teal-400 animate-spin" />
@@ -1966,14 +2092,14 @@ export default function Watch() {
 
   if (!video) {
     return (
-      <div className="min-h-screen w-full bg-slate-950 flex flex-col">
+      <div className={`min-h-screen w-full bg-slate-950 flex flex-col ${titleBarPadding}`}>
         <Navbar />
         <div className="flex flex-col items-center justify-center pt-40">
-          <h1 className="text-2xl font-bold text-white mb-2">Video not found</h1>
-          <p className="text-slate-400 mb-6">This video may have been removed or doesn't exist.</p>
-          <Link to="/" className="px-6 py-2 bg-teal-500 hover:bg-teal-400 text-white rounded-full font-medium transition-colors">
-            Back to Home
-          </Link>
+          <h1 className="text-2xl font-bold text-white mb-2">{t.video?.videoNotFound || 'Video not found'}</h1>
+          <p className="text-slate-400 mb-6">{t.video?.videoNotFoundDesc || "This video may have been removed or doesn't exist."}</p>
+          <LocalizedLink to="/" className="px-6 py-2 bg-teal-500 hover:bg-teal-400 text-white rounded-full font-medium transition-colors">
+            {t.video?.backToHome || 'Back to Home'}
+          </LocalizedLink>
         </div>
       </div>
     );
@@ -1984,7 +2110,7 @@ export default function Watch() {
   const filteredRelated = relatedVideos.filter(v => v.id !== video.id).slice(0, 8);
 
   return (
-    <div className="min-h-screen w-full bg-slate-950 flex flex-col">
+    <div className={`min-h-screen w-full bg-slate-950 flex flex-col ${titleBarPadding}`}>
       <Navbar />
       
       <main className="flex-1 pt-20 pb-8 px-4 lg:px-6 xl:px-8 max-w-[1800px] mx-auto w-full">
@@ -1992,167 +2118,65 @@ export default function Watch() {
           {/* Main content */}
           <div className="flex-1 min-w-0">
             {/* Video player */}
-            <div 
-              ref={playerContainerRef}
-              className="bg-black rounded-xl overflow-hidden relative group w-full"
-              style={{ 
-                aspectRatio: videoAspectRatio,
-                maxHeight: 'calc(100vh - 180px)'
-              }}
-            >
-              {/* Actual video element - only render when payment confirmed */}
+            <div className="relative w-full">
+              {/* Video player - memoized to prevent re-renders */}
               {video.videoUrl && paymentState === "unlocked" ? (
-                <>
-                  <video
-                    ref={videoRef}
-                    src={video.videoUrl}
-                    poster={thumbnail}
-                    className="w-full h-full bg-black"
-                    style={{
-                      // Video fills container (container matches video aspect ratio)
-                      objectFit: 'cover',
-                      // Force hardware acceleration
-                      willChange: 'transform',
-                      transform: 'translateZ(0)',
-                    }}
-                    onTimeUpdate={handleTimeUpdate}
-                    onPlay={handleVideoPlay}
-                    onPause={handleVideoPause}
-                    onEnded={handleVideoEnded}
-                    onLoadedMetadata={(e) => {
-                      handleLoadedMetadata();
-                      // Check if video track is available and set aspect ratio
-                      const vid = e.currentTarget;
-                      if (vid.videoWidth === 0 || vid.videoHeight === 0) {
-                        console.error("Video has no video track - audio only or corrupted");
-                        setVideoError("Video track unavailable. The video may be audio-only or the video stream is being blocked.");
-                      } else {
-                        // Set container aspect ratio to match video
-                        setVideoAspectRatio(`${vid.videoWidth}/${vid.videoHeight}`);
-                      }
-                    }}
-                    onError={(e) => {
-                      console.error("Video load error:", e);
-                      setVideoError("Video failed to load. This may be caused by antivirus software or browser settings blocking the video stream.");
-                    }}
-                    onStalled={() => {
-                      // Video stalled - could be network or blocking issue
-                      console.warn("Video playback stalled - buffering");
-                      setIsBuffering(true);
-                    }}
-                    onWaiting={() => {
-                      // Video is waiting for more data
-                      console.log("Video waiting for data - buffering");
-                      setIsBuffering(true);
-                    }}
-                    onCanPlay={() => {
-                      // Video has enough data to play
-                      setIsBuffering(false);
-                    }}
-                    onCanPlayThrough={() => {
-                      // Video can play through without buffering
-                      setIsBuffering(false);
-                    }}
-                    onLoadedData={() => {
-                      // Video data loaded
-                      setIsBuffering(false);
-                    }}
-                    onPlaying={() => {
-                      // Video is playing
-                      setIsBuffering(false);
-                    }}
-
-                    onProgress={(e) => {
-                      // Track buffered progress
-                      const vid = e.currentTarget;
-                      if (vid.buffered.length > 0 && vid.duration > 0) {
-                        const bufferedEnd = vid.buffered.end(vid.buffered.length - 1);
-                        setBufferedPercent((bufferedEnd / vid.duration) * 100);
-                      }
-                    }}
-                    preload="metadata"
-                    playsInline
-                  />
-                  {/* Buffering overlay - shows spinner only when actively playing and waiting for data */}
-                  {isBuffering && isPlaying && !videoError && (
-                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-5 pointer-events-none">
-                      <div className="flex flex-col items-center gap-3">
-                        <div className="w-12 h-12 border-3 border-primary/30 border-t-primary rounded-full animate-spin" />
-                        <span className="text-white/80 text-sm font-medium">Buffering...</span>
-                      </div>
-                    </div>
-                  )}
-                  {/* Video error overlay */}
-                  {videoError && (
-                    <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-6 z-10">
-                      <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center mb-4">
-                        <svg className="w-8 h-8 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                        </svg>
-                      </div>
-                      <h3 className="text-white font-semibold text-lg mb-2">Video Playback Issue</h3>
-                      <p className="text-slate-400 text-center max-w-md mb-4">{videoError}</p>
-                      <div className="text-sm text-slate-500 text-center space-y-1">
-                        <p>Try these fixes:</p>
-                        <ul className="list-disc list-inside text-left">
-                          <li>Disable antivirus real-time scanning temporarily</li>
-                          <li>Add this site to your antivirus whitelist</li>
-                          <li>Try a different browser</li>
-                          <li>Download the video and play locally</li>
-                        </ul>
-                      </div>
-                      <div className="flex gap-3 mt-4">
-                        <button
-                          onClick={() => {
-                            setVideoError(null);
-                            if (videoRef.current) {
-                              // Add cache-busting parameter to force fresh fetch
-                              const currentSrc = videoRef.current.src;
-                              const cacheBuster = `?t=${Date.now()}`;
-                              const newSrc = currentSrc.includes('?') 
-                                ? currentSrc.split('?')[0] + cacheBuster 
-                                : currentSrc + cacheBuster;
-                              videoRef.current.src = newSrc;
-                              videoRef.current.load();
-                            }
-                          }}
-                          className="px-4 py-2 bg-primary/20 hover:bg-primary/30 text-primary rounded-lg transition-colors"
-                        >
-                          Try Again
-                        </button>
-                        <button
-                          onClick={() => {
-                            // Open video in new tab - sometimes bypasses antivirus scanning
-                            if (video.videoUrl) {
-                              window.open(video.videoUrl, '_blank');
-                            }
-                          }}
-                          className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors"
-                        >
-                          Open in New Tab
-                        </button>
-                        {video.videoUrl && (
-                          <a
-                            href={video.videoUrl}
-                            download={`${video.title || 'video'}.mp4`}
-                            className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors flex items-center gap-2"
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                            </svg>
-                            Download
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <img 
-                  src={thumbnail} 
-                  alt={video.title}
-                  className="w-full h-full object-cover"
+                <VideoPlayer
+                  ref={playerRef}
+                  src={video.videoUrl}
+                  poster={thumbnail}
+                  initialProgress={savedProgress || 0}
+                  initialVolume={initialVolume}
+                  initialMuted={initialMuted}
+                  durationSeconds={video.durationSeconds}
+                  onTimeUpdate={handleVideoTimeUpdate}
+                  onViewThresholdReached={handleViewThresholdReached}
+                  onLoadedMetadata={handleLoadedMetadata}
+                  onPlayStateChange={handlePlayStateChange}
+                  translations={{
+                    buffering: t.video?.buffering || 'Buffering...',
+                    videoPlaybackIssue: t.video?.videoPlaybackIssue || 'Video Playback Issue',
+                    tryTheseFixes: t.video?.tryTheseFixes || 'Try these fixes:',
+                    tryAgain: t.video?.tryAgain || 'Try Again',
+                    openInNewTab: t.video?.openInNewTab || 'Open in New Tab',
+                    download: t.video?.download || 'Download',
+                  }}
                 />
+              ) : (
+                <div 
+                  className="w-full bg-black rounded-xl overflow-hidden"
+                  style={{ 
+                    aspectRatio: videoAspectRatio,
+                    maxHeight: 'calc(100vh - 180px)'
+                  }}
+                >
+                  <img 
+                    src={thumbnail} 
+                    alt={video.title}
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+              )}
+              
+              {/* Encoding in progress overlay - video uploaded but still processing on Bunny */}
+              {!video.videoUrl && video.bunnyStatus && video.bunnyStatus !== 'finished' && video.bunnyStatus !== 'error' && paymentState === "unlocked" && (
+                <EncodingOverlay videoId={video.id} onReady={() => window.location.reload()} />
+              )}
+              
+              {/* Encoding failed overlay */}
+              {video.bunnyStatus === 'error' && paymentState === "unlocked" && (
+                <div className="absolute inset-0 bg-gradient-to-t from-black via-black/80 to-black/60 flex flex-col items-center justify-center p-6">
+                  <div className="w-20 h-20 rounded-full bg-gradient-to-br from-red-500/30 to-rose-500/30 backdrop-blur-sm flex items-center justify-center mb-6 border border-red-500/50">
+                    <AlertCircle className="w-10 h-10 text-red-400" />
+                  </div>
+                  
+                  <h2 className="text-2xl font-bold text-white text-center mb-2">
+                    {t.video?.encodingFailed || 'Video Processing Failed'}
+                  </h2>
+                  <p className="text-slate-400 mb-4 text-center max-w-md">
+                    {t.video?.encodingFailedDesc || 'There was an error processing this video. The creator may need to re-upload it.'}
+                  </p>
+                </div>
               )}
               
               {/* Members-only overlay - needs membership */}
@@ -2164,26 +2188,26 @@ export default function Watch() {
                   
                   <div className="flex items-center gap-2 mb-2">
                     <Sparkles className="w-5 h-5 text-purple-400" />
-                    <h2 className="text-2xl font-bold text-white text-center">Members Only</h2>
+                    <h2 className="text-2xl font-bold text-white text-center">{t.video.membersOnlyTitle || 'Members Only'}</h2>
                     <Sparkles className="w-5 h-5 text-purple-400" />
                   </div>
                   <p className="text-slate-400 mb-6 text-center max-w-md">
-                    This exclusive content is only available to {video.channel.name}'s members.
+                    {t.video.membersOnlyDesc || "This exclusive content is only available to members."}
                   </p>
                   
                   {/* Membership CTA */}
                   <div className="bg-slate-800/80 backdrop-blur-sm px-6 py-4 rounded-2xl border border-purple-500/30 mb-6">
-                    <p className="text-purple-300 text-center mb-2">Join the community!</p>
-                    <p className="text-slate-400 text-sm text-center">Get access to exclusive videos, behind-the-scenes content, and more.</p>
+                    <p className="text-purple-300 text-center mb-2">{t.video.joinCommunity || 'Join the community!'}</p>
+                    <p className="text-slate-400 text-sm text-center">{t.video.memberBenefits || 'Get access to exclusive videos and more.'}</p>
                   </div>
                   
-                  <Link
+                  <LocalizedLink
                     to={`/channel/${video.channel.handle}`}
                     className="flex items-center justify-center gap-2 px-8 py-3 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-400 hover:to-pink-400 text-white rounded-full font-semibold transition-all shadow-lg shadow-purple-500/25 hover:shadow-purple-500/40"
                   >
                     <Crown className="w-5 h-5" />
-                    View Membership Options
-                  </Link>
+                    {t.video.viewMembershipOptions || 'View Membership Options'}
+                  </LocalizedLink>
                 </div>
               )}
               
@@ -2191,24 +2215,32 @@ export default function Watch() {
               {video.isMembersOnly && membershipLoading && (
                 <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center">
                   <Loader2 className="w-12 h-12 text-purple-400 animate-spin mb-4" />
-                  <p className="text-slate-400">Checking membership access...</p>
+                  <p className="text-slate-400">{t.video.checkingMembership || 'Checking membership access...'}</p>
                 </div>
               )}
               
-              {/* Payment required overlay - for authenticated users with failed payment */}
-              {paymentState === "locked" && isConnected && !video.isMembersOnly && (
+              {/* Preloading overlay for free videos - gives browser time to establish connections */}
+              {isPreloading && (
+                <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center z-20">
+                  <Loader2 className="w-12 h-12 text-teal-400 animate-spin mb-4" />
+                  <p className="text-slate-300 font-medium">{t.video?.preparing || 'Preparing video...'}</p>
+                </div>
+              )}
+              
+              {/* Payment required overlay - for authenticated users with failed payment (PAID VIDEOS ONLY) */}
+              {paymentState === "locked" && isConnected && !video.isMembersOnly && !isVideoFree(video.priceKas) && (
                 <div className="absolute inset-0 bg-gradient-to-t from-black via-black/80 to-black/60 flex flex-col items-center justify-center p-6">
                   <div className="w-20 h-20 rounded-full bg-gradient-to-br from-teal-500/30 to-emerald-500/30 backdrop-blur-sm flex items-center justify-center mb-6 border border-teal-500/50">
                     <Play className="w-10 h-10 text-teal-400 ml-1" />
                   </div>
                   
-                  <h2 className="text-2xl font-bold text-white text-center mb-2">Pay to Watch</h2>
+                  <h2 className="text-2xl font-bold text-white text-center mb-2">{t.video.payToWatch || 'Pay to Watch'}</h2>
                   <p className="text-slate-400 mb-6 text-center max-w-md">
-                    This video requires a small payment to watch. Your KAS goes directly to the creator.
+                    {t.video.payToWatchDesc || 'This video requires a small payment to watch.'}
                   </p>
                   
                   <div className="bg-slate-800/80 backdrop-blur-sm px-6 py-4 rounded-2xl border border-teal-500/30 mb-6">
-                    <p className="text-teal-300 text-center mb-1">{getViewCostForDuration(video?.durationSeconds || 0)} KAS per view</p>
+                    <p className="text-teal-300 text-center mb-1">{getVideoPrice(video)} KAS per view</p>
                     <p className="text-slate-400 text-sm text-center">
                       Your balance: {balance !== null ? balance.toFixed(4) : "..."} KAS
                     </p>
@@ -2219,32 +2251,32 @@ export default function Watch() {
                     className="flex items-center justify-center gap-2 px-8 py-3 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-white rounded-full font-semibold transition-all shadow-lg shadow-teal-500/25 hover:shadow-teal-500/40"
                   >
                     <RefreshCw className="w-5 h-5" />
-                    Retry Payment
+                    {t.video.retryPayment || 'Retry Payment'}
                   </button>
                   
-                  {balance !== null && balance < getViewCostForDuration(video?.durationSeconds || 0) && (
+                  {balance !== null && balance < getVideoPrice(video) && (
                     <p className="text-amber-400 text-sm mt-4 text-center">
-                      Add more KAS to your wallet to watch this video
+                      {t.video.insufficientBalance || 'Add more KAS to your wallet'}
                     </p>
                   )}
                 </div>
               )}
               
-              {/* Login required overlay - for non-authenticated users */}
-              {paymentState === "locked" && !isConnected && !video.isMembersOnly && (
+              {/* Login required overlay - for non-authenticated users (PAID VIDEOS ONLY) */}
+              {paymentState === "locked" && !isConnected && !video.isMembersOnly && !isVideoFree(video.priceKas) && (
                 <div className="absolute inset-0 bg-gradient-to-t from-black via-black/80 to-black/60 flex flex-col items-center justify-center p-6">
                   <div className="w-20 h-20 rounded-full bg-gradient-to-br from-teal-500/30 to-emerald-500/30 backdrop-blur-sm flex items-center justify-center mb-6 border border-teal-500/50">
                     <Play className="w-10 h-10 text-teal-400 ml-1" />
                   </div>
                   
-                  <h2 className="text-2xl font-bold text-white text-center mb-2">Sign in to Watch</h2>
+                  <h2 className="text-2xl font-bold text-white text-center mb-2">{t.video.signInToWatch || 'Sign in to Watch'}</h2>
                   <p className="text-slate-400 mb-4 text-center max-w-md">
-                    Create an account or sign in to watch videos on KasShi. Each view supports creators directly with KAS.
+                    {t.video.signInToWatchDesc || 'Connect a wallet to watch this paid video.'}
                   </p>
                   
                   <div className="bg-slate-800/80 backdrop-blur-sm px-6 py-4 rounded-2xl border border-teal-500/30 mb-6">
-                    <p className="text-teal-300 text-center mb-1">{getViewCostForDuration(video?.durationSeconds || 0)} KAS per view</p>
-                    <p className="text-slate-400 text-sm text-center">95% goes directly to the creator</p>
+                    <p className="text-teal-300 text-center mb-1">{getVideoPrice(video)} KAS per view</p>
+                    <p className="text-slate-400 text-sm text-center">{t.video.creatorGetsPercent || '95% goes directly to the creator'}</p>
                   </div>
                   
                   <div className="flex flex-col gap-3 w-full max-w-xs">
@@ -2253,13 +2285,13 @@ export default function Watch() {
                       onClick={() => redirectToLogin()}
                       className="flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-white rounded-full font-semibold transition-all shadow-lg shadow-teal-500/25 hover:shadow-teal-500/40"
                     >
-                      Sign in with Google
+                      {t.auth.signInGoogle}
                     </button>
-                    <p className="text-slate-500 text-xs text-center">Wallet auto-created • Best for newcomers</p>
+                    <p className="text-slate-500 text-xs text-center">{t.auth.walletAutoCreated} • {t.auth.bestForNewcomers}</p>
                     
                     <div className="flex items-center gap-2 my-2">
                       <div className="flex-1 h-px bg-slate-600" />
-                      <span className="text-slate-500 text-sm">OR</span>
+                      <span className="text-slate-500 text-sm">{t.common.or || 'OR'}</span>
                       <div className="flex-1 h-px bg-slate-600" />
                     </div>
                     
@@ -2272,12 +2304,12 @@ export default function Watch() {
                       {isKaswareAuthenticating ? (
                         <>
                           <Loader2 className="w-5 h-5 animate-spin" />
-                          Connecting...
+                          {t.auth.connecting}
                         </>
                       ) : kasware.isAvailable ? (
                         <>
                           <KaspaIcon className="w-5 h-5" />
-                          Connect KasWare Wallet
+                          {t.auth.connectKasWare}
                         </>
                       ) : (
                         <>
@@ -2286,7 +2318,7 @@ export default function Watch() {
                         </>
                       )}
                     </button>
-                    <p className="text-slate-500 text-xs text-center">Use your own wallet • Full control</p>
+                    <p className="text-slate-500 text-xs text-center">{t.auth.useYourWallet}</p>
                   </div>
                 </div>
               )}
@@ -2298,167 +2330,12 @@ export default function Watch() {
                     <div className="w-20 h-20 rounded-full border-4 border-slate-700 border-t-teal-500 animate-spin" />
                     <Sparkles className="w-8 h-8 text-teal-400 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
                   </div>
-                  <h2 className="text-xl font-semibold text-white mb-2">Processing Payment</h2>
+                  <h2 className="text-xl font-semibold text-white mb-2">{t.common.processing}</h2>
                   <p className="text-slate-400">Loading video...</p>
                 </div>
               )}
               
-              {/* Click to play/pause overlay */}
-              {paymentState === "unlocked" && video.videoUrl && (
-                <div 
-                  className="absolute inset-0 cursor-pointer"
-                  onClick={togglePlay}
-                >
-                  {/* Center play button (only when paused) */}
-                  {!isPlaying && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-20 h-20 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center hover:bg-white/30 transition-colors">
-                        <Play className="w-10 h-10 text-white fill-white ml-1" />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-              
-              {/* Video controls bar */}
-              {paymentState === "unlocked" && video.videoUrl && (
-                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 pb-2 pt-8">
-                  {/* Progress bar - draggable */}
-                  <div 
-                    ref={progressBarRef}
-                    className={`mx-4 mb-2 h-1 bg-white/30 rounded-full cursor-pointer hover:h-2 transition-all group/progress relative ${isDragging ? 'h-2' : ''}`}
-                    onMouseDown={handleProgressMouseDown}
-                    onTouchStart={handleProgressTouchStart}
-                  >
-                    {/* Buffered indicator */}
-                    <div 
-                      className="absolute inset-y-0 left-0 bg-white/40 rounded-full pointer-events-none"
-                      style={{ width: `${bufferedPercent}%` }}
-                    />
-                    {/* Played progress */}
-                    <div 
-                      className="h-full bg-teal-500 rounded-full relative pointer-events-none z-10"
-                      style={{ width: `${((currentProgress / (videoRef.current?.duration || video.durationSeconds || 600)) * 100)}%` }}
-                    >
-                      <div className={`absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-teal-400 rounded-full transition-opacity ${isDragging ? 'opacity-100 scale-125' : 'opacity-0 group-hover/progress:opacity-100'}`} />
-                    </div>
-                  </div>
-                  
-                  {/* Controls row */}
-                  <div className="flex items-center justify-between px-4">
-                    <div className="flex items-center gap-3">
-                      {/* Play/Pause */}
-                      <button onClick={togglePlay} className="text-white hover:text-teal-400 transition-colors">
-                        {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6 fill-current" />}
-                      </button>
-                      
-                      {/* Volume - note: iOS doesn't allow programmatic volume control */}
-                      <div className="flex items-center gap-1 group/volume relative">
-                        <button 
-                          onClick={toggleMute} 
-                          className="text-white hover:text-teal-400 transition-colors"
-                          title={/iPad|iPhone|iPod/.test(navigator.userAgent) ? "Use device volume buttons" : "Toggle mute"}
-                        >
-                          {isMuted || volume === 0 ? (
-                            <VolumeX className="w-5 h-5" />
-                          ) : volume < 0.5 ? (
-                            <Volume1 className="w-5 h-5" />
-                          ) : (
-                            <Volume2 className="w-5 h-5" />
-                          )}
-                        </button>
-                        {/* Hide slider on iOS since programmatic volume control doesn't work */}
-                        {!/iPad|iPhone|iPod/.test(navigator.userAgent) && (
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.01"
-                            value={isMuted ? 0 : volume}
-                            onChange={handleVolumeChange}
-                            className="w-0 group-hover/volume:w-20 transition-all duration-200 accent-teal-500 cursor-pointer"
-                          />
-                        )}
-                      </div>
-                      
-                      {/* Time display */}
-                      <span className="text-white text-sm">
-                        {formatDuration(currentProgress)} / {formatDuration(videoRef.current?.duration || video.durationSeconds)}
-                      </span>
-                    </div>
-                    
-                    <div className="flex items-center gap-3">
-                      {/* Quality indicator */}
-                      <div className="relative">
-                        <button
-                          onClick={() => {
-                            setShowQualityMenu(!showQualityMenu);
-                            setShowSpeedMenu(false);
-                          }}
-                          className="text-white hover:text-teal-400 transition-colors text-sm font-medium px-2 py-1 rounded hover:bg-white/10 flex items-center gap-1"
-                        >
-                          <Settings className="w-4 h-4" />
-                          {videoQuality}
-                        </button>
-                        {showQualityMenu && (
-                          <div className="absolute bottom-full right-0 mb-2 bg-slate-900 rounded-lg shadow-xl border border-white/10 py-2 min-w-[140px]">
-                            <div className="px-3 pb-2 mb-2 border-b border-white/10">
-                              <span className="text-xs text-gray-400 uppercase tracking-wide">Quality</span>
-                            </div>
-                            <div className="px-3 py-1.5 text-sm text-teal-400 flex items-center gap-2">
-                              <span className="w-2 h-2 rounded-full bg-teal-400"></span>
-                              {videoQuality}
-                              {nativeResolution && (
-                                <span className="text-gray-500 text-xs">
-                                  ({nativeResolution.width}×{nativeResolution.height})
-                                </span>
-                              )}
-                            </div>
-                            <div className="px-3 pt-2 mt-2 border-t border-white/10">
-                              <span className="text-xs text-gray-500">
-                                Original quality • No transcoding
-                              </span>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                      
-                      {/* Playback speed */}
-                      <div className="relative">
-                        <button
-                          onClick={() => {
-                            setShowSpeedMenu(!showSpeedMenu);
-                            setShowQualityMenu(false);
-                          }}
-                          className="text-white hover:text-teal-400 transition-colors text-sm font-medium px-2 py-1 rounded hover:bg-white/10"
-                        >
-                          {playbackSpeed}x
-                        </button>
-                        {showSpeedMenu && (
-                          <div className="absolute bottom-full right-0 mb-2 bg-slate-900 rounded-lg shadow-xl border border-white/10 py-1 min-w-[80px]">
-                            {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(speed => (
-                              <button
-                                key={speed}
-                                onClick={() => changePlaybackSpeed(speed)}
-                                className={`w-full px-3 py-1.5 text-left text-sm hover:bg-white/10 transition-colors ${
-                                  playbackSpeed === speed ? 'text-teal-400' : 'text-white'
-                                }`}
-                              >
-                                {speed}x
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      
-                      {/* Fullscreen */}
-                      <button onClick={toggleFullscreen} className="text-white hover:text-teal-400 transition-colors">
-                        {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
+              {/* VideoPlayer now handles click-to-play and controls internally */}
               
               {/* Duration badge (when no video URL or not hovering) */}
               {(!video.videoUrl || paymentState !== "unlocked") && (
@@ -2471,7 +2348,7 @@ export default function Watch() {
               {savedProgress !== null && savedProgress > 0 && !isPlaying && paymentState === "unlocked" && (
                 <div className="absolute bottom-14 left-1/2 -translate-x-1/2 bg-black/80 backdrop-blur-sm text-white text-sm px-4 py-2 rounded-full flex items-center gap-2">
                   <Play className="w-4 h-4" />
-                  Resume from {formatDuration(savedProgress)}
+                  {t.video?.resumeFrom || 'Resume from'} {formatDuration(savedProgress)}
                 </div>
               )}
               
@@ -2484,32 +2361,32 @@ export default function Watch() {
             <div className="flex flex-wrap items-center justify-between gap-4 mt-4">
               {/* Channel info */}
               <div className="flex items-center gap-4">
-                <Link to={`/channel/${video.channel.handle}`}>
+                <LocalizedLink to={`/channel/${video.channel.handle}`}>
                   <img 
                     src={channelAvatar} 
                     alt={video.channel.name}
                     className="w-12 h-12 rounded-full object-cover"
                   />
-                </Link>
+                </LocalizedLink>
                 <div>
-                  <Link 
+                  <LocalizedLink 
                     to={`/channel/${video.channel.handle}`}
                     className="font-semibold text-white hover:text-teal-400 transition-colors flex items-center gap-1"
                   >
                     {video.channel.name}
                     
-                  </Link>
+                  </LocalizedLink>
                   <p className="text-sm text-slate-400">
-                    {video.channel.subscriberCount?.toLocaleString() || 0} subscribers
+                    {video.channel.subscriberCount?.toLocaleString() || 0} {t.video?.subscribers || 'subscribers'}
                   </p>
                 </div>
                 {channel?.id === video.channel.id && (
-                  <Link
+                  <LocalizedLink
                     to={`/edit/${video.publicId || video.id}`}
                     className="px-4 py-2 rounded-full font-medium text-sm bg-teal-600 text-white hover:bg-teal-500 transition-colors flex items-center gap-1"
                   >
-                    <Edit3 className="w-4 h-4" /> Edit
-                  </Link>
+                    <Edit3 className="w-4 h-4" /> {t.video?.edit || 'Edit'}
+                  </LocalizedLink>
                 )}
                 {channel?.id !== video.channel.id && (
                   <button 
@@ -2552,9 +2429,9 @@ export default function Watch() {
                     {isSubscribing ? (
                       <Loader2 className="w-4 h-4 animate-spin inline" />
                     ) : isSubscribed ? (
-                      "Subscribed"
+                      t.video.subscribed
                     ) : (
-                      "Subscribe"
+                      t.video.subscribe
                     )}
                   </button>
                 )}
@@ -2602,7 +2479,7 @@ export default function Watch() {
                     className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-full text-white transition-colors"
                   >
                     <Share2 className="w-5 h-5" />
-                    <span className="text-sm hidden sm:inline">Share</span>
+                    <span className="text-sm hidden sm:inline">{t.video.share}</span>
                   </button>
                   {showShareMenu && (
                     <div className="absolute top-12 right-0 w-56 bg-slate-800 rounded-xl shadow-xl border border-slate-700 py-2 z-50">
@@ -2649,7 +2526,7 @@ export default function Watch() {
                         className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-700 text-white text-sm transition-colors disabled:opacity-50"
                       >
                         {isSharing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Copy className="w-4 h-4" />}
-                        Copy link
+                        {t.video?.copyLink || 'Copy link'}
                       </button>
                       <button
                         onClick={async () => {
@@ -2693,7 +2570,7 @@ export default function Watch() {
                         className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-700 text-white text-sm transition-colors disabled:opacity-50"
                       >
                         {isSharing ? <Loader2 className="w-4 h-4 animate-spin" /> : <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>}
-                        Share on X
+                        {t.video?.shareOnX || 'Share on X'}
                       </button>
                       <button
                         onClick={async () => {
@@ -2737,7 +2614,7 @@ export default function Watch() {
                         className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-700 text-white text-sm transition-colors disabled:opacity-50"
                       >
                         {isSharing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Facebook className="w-4 h-4" />}
-                        Share on Facebook
+                        {t.video?.shareOnFacebook || 'Share on Facebook'}
                       </button>
                     </div>
                   )}
@@ -2748,7 +2625,7 @@ export default function Watch() {
                   className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 rounded-full text-white font-medium transition-all shadow-lg shadow-amber-500/20 hover:shadow-amber-500/30"
                 >
                   <Gift className="w-5 h-5" />
-                  <span className="text-sm">Tip</span>
+                  <span className="text-sm">{t.video.tip}</span>
                 </button>
 
                 {/* More options dropdown */}
@@ -2769,7 +2646,7 @@ export default function Watch() {
                         className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-700 text-white text-sm transition-colors"
                       >
                         <Flag className="w-4 h-4" />
-                        Report video
+                        {t.video.report}
                       </button>
                     </div>
                   )}
@@ -2783,28 +2660,28 @@ export default function Watch() {
               className="mt-4 p-4 bg-slate-900/50 hover:bg-slate-800/50 rounded-xl cursor-pointer transition-colors"
             >
               <div className="flex items-center gap-4 text-sm text-slate-400 mb-2">
-                <span>{formatViews(localViewCount)} views</span>
+                <span>{formatViews(localViewCount)} {t.video.views}</span>
                 <span>•</span>
                 <span>{formatTimeAgo(video.createdAt)}</span>
               </div>
               {descriptionExpanded ? (
                 <>
                   <p className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap">
-                    {video.description || "No description available."}
+                    {video.description ? linkifyText(video.description) : (t.video?.noDescription || "No description available.")}
                   </p>
                   <div className="mt-4 pt-4 border-t border-slate-700">
                     <div className="flex items-center justify-between">
                       <div className="text-xs text-slate-500">
-                        <span>Uploaded {new Date(video.createdAt).toLocaleDateString('en-US', { 
+                        <span>{t.video?.uploaded || 'Uploaded'} {new Date(video.createdAt).toLocaleDateString('en-US', { 
                           year: 'numeric', 
                           month: 'long', 
                           day: 'numeric' 
                         })}</span>
                         <span className="mx-2">•</span>
-                        <span>Recorded on the Kaspa BlockDAG</span>
+                        <span>{t.video?.recordedOnBlockDAG || 'Recorded on the Kaspa BlockDAG'}</span>
                       </div>
                       <button className="text-sm text-slate-400 hover:text-white flex items-center gap-1">
-                        Show less <ChevronUp className="w-4 h-4" />
+                        {t.common.seeLess} <ChevronUp className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
@@ -2812,9 +2689,9 @@ export default function Watch() {
               ) : (
                 <div className="flex items-center justify-between">
                   <p className="text-slate-300 text-sm leading-relaxed line-clamp-2 flex-1">
-                    {video.description || "No description available."}
+                    {video.description ? linkifyText(video.description) : (t.video?.noDescription || "No description available.")}
                   </p>
-                  <span className="text-sm text-slate-400 ml-2 flex-shrink-0">...more</span>
+                  <span className="text-sm text-slate-400 ml-2 flex-shrink-0">...{t.common.more || 'more'}</span>
                 </div>
               )}
             </div>
@@ -2822,7 +2699,7 @@ export default function Watch() {
             {/* Comments section */}
             <div className="mt-8">
               <h2 className="text-lg font-semibold text-white mb-4">
-                {video.commentCount} Comments
+                {video.commentCount} {t.video.comments}
               </h2>
 
               {/* Comment input */}
@@ -2837,7 +2714,7 @@ export default function Watch() {
                     type="text"
                     value={comment}
                     onChange={(e) => setComment(e.target.value)}
-                    placeholder="Add a comment..."
+                    placeholder={t.video.addComment}
                     className="w-full bg-transparent border-b border-slate-700 focus:border-teal-500 pb-2 text-white placeholder-slate-500 focus:outline-none transition-colors"
                     disabled={isCommenting}
                   />
@@ -2848,7 +2725,7 @@ export default function Watch() {
                         onClick={() => setComment("")}
                         className="px-4 py-2 text-sm text-slate-400 hover:text-white transition-colors"
                       >
-                        Cancel
+                        {t.common.cancel}
                       </button>
                       <button 
                         type="submit"
@@ -2860,7 +2737,7 @@ export default function Watch() {
                         ) : (
                           <Send className="w-4 h-4" />
                         )}
-                        Comment
+                        {t.video.comment || 'Comment'}
                       </button>
                     </div>
                   )}
@@ -2928,7 +2805,7 @@ export default function Watch() {
                               className="flex items-center gap-1 text-slate-400 hover:text-teal-400 transition-colors text-xs"
                             >
                               <MessageSquare className="w-4 h-4" />
-                              Reply
+                              {t.video.reply}
                             </button>
                             {channel?.id === c.author.id && (
                               <button 
@@ -3051,18 +2928,18 @@ export default function Watch() {
                   })}
                 </div>
               ) : (
-                <p className="text-slate-400 text-center py-8">No comments yet. Be the first to comment!</p>
+                <p className="text-slate-400 text-center py-8">{t.video.noComments}. {t.video.beFirstComment || 'Be the first to comment!'}</p>
               )}
             </div>
           </div>
 
           {/* Sidebar - Related videos */}
           <aside className="lg:w-[380px] xl:w-[400px] flex-shrink-0">
-            <h3 className="text-lg font-semibold text-white mb-4">Related Videos</h3>
+            <h3 className="text-lg font-semibold text-white mb-4">{t.video.relatedVideos}</h3>
             {filteredRelated.length > 0 ? (
               <div className="space-y-4">
                 {filteredRelated.map((v) => (
-                  <Link key={v.id} to={`/watch/${v.publicId || v.id}`} className="flex gap-3 group">
+                  <LocalizedLink key={v.id} to={`/watch/${v.publicId || v.id}`} className="flex gap-3 group">
                     <div className="relative w-40 flex-shrink-0">
                       <img 
                         src={v.thumbnailUrl || DEFAULT_THUMBNAIL}
@@ -3082,11 +2959,11 @@ export default function Watch() {
                         {formatViews(v.viewCount)} views • {formatTimeAgo(v.createdAt)}
                       </p>
                     </div>
-                  </Link>
+                  </LocalizedLink>
                 ))}
               </div>
             ) : (
-              <p className="text-slate-400 text-sm">No related videos yet.</p>
+              <p className="text-slate-400 text-sm">{t.video?.noRelatedVideos || 'No related videos yet.'}</p>
             )}
           </aside>
         </div>
@@ -3096,7 +2973,7 @@ export default function Watch() {
       {showPaymentToast && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gradient-to-r from-teal-500 to-cyan-600 text-white px-6 py-3 rounded-full shadow-lg shadow-teal-500/25 flex items-center gap-3 animate-in slide-in-from-bottom-4 fade-in duration-300">
           <CheckCircle className="w-5 h-5" />
-          <span className="font-medium">Thank you for watching!</span>
+          <span className="font-medium">{t.video.thankYouWatching || 'Thank you for watching!'}</span>
         </div>
       )}
 
@@ -3129,7 +3006,7 @@ export default function Watch() {
             onClick={e => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold text-white">Tip Creator</h2>
+              <h2 className="text-xl font-bold text-white">{t.video.tipCreator || 'Tip Creator'}</h2>
               <button 
                 onClick={() => setShowTipModal(false)}
                 className="p-2 hover:bg-slate-800 rounded-full transition-colors"
@@ -3151,7 +3028,7 @@ export default function Watch() {
             </div>
 
             <div className="mb-4">
-              <label className="text-sm text-slate-400 mb-2 block">Tip Amount (KAS)</label>
+              <label className="text-sm text-slate-400 mb-2 block">{t.video.tipAmount || 'Tip Amount'} (KAS)</label>
               <div className="relative">
                 <div className="absolute left-4 top-1/2 -translate-y-1/2">
                   <KaspaIcon size={20} />
@@ -3193,12 +3070,12 @@ export default function Watch() {
               {isTipping ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  Sending...
+                  {t.common.sending || 'Sending...'}
                 </>
               ) : (
                 <>
                   <Gift className="w-5 h-5" />
-                  Send Tip
+                  {t.video?.sendTip || 'Send Tip'}
                 </>
               )}
             </button>
@@ -3213,7 +3090,7 @@ export default function Watch() {
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-xl font-bold text-white flex items-center gap-2">
                 <Flag className="w-5 h-5 text-red-400" />
-                Report Video
+                {t.video?.reportVideo || 'Report Video'}
               </h3>
               <button
                 onClick={() => { setShowReportModal(false); setReportReason(""); }}
@@ -3224,7 +3101,7 @@ export default function Watch() {
             </div>
 
             <p className="text-slate-400 text-sm mb-4">
-              Select a reason for reporting this video.
+              {t.video?.selectReportReason || 'Select a reason for reporting this video.'}
             </p>
 
             <div className="space-y-2 mb-6">

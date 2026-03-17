@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_playlists_music_profile_id ON playlists(music_profile_id);

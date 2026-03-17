@@ -1,0 +1,2 @@
+DROP INDEX idx_track_plays_track_wallet;
+DROP INDEX idx_episode_plays_episode_wallet;

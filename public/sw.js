@@ -1,5 +1,5 @@
 // KasShi Service Worker - Basic caching for PWA
-const CACHE_NAME = 'kasshi-v1';
+const CACHE_NAME = 'kasshi-v2';
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
@@ -38,6 +38,10 @@ self.addEventListener('fetch', (event) => {
   // Skip API calls (always need fresh data)
   if (event.request.url.includes('/api/')) return;
   
+  // Check if this is a navigation request (HTML page)
+  const isNavigationRequest = event.request.mode === 'navigate' ||
+    (event.request.method === 'GET' && event.request.headers.get('accept')?.includes('text/html'));
+  
   event.respondWith(
     fetch(event.request)
       .then((response) => {
@@ -50,9 +54,19 @@ self.addEventListener('fetch', (event) => {
         }
         return response;
       })
-      .catch(() => {
+      .catch(async () => {
         // Fallback to cache
-        return caches.match(event.request);
+        const cached = await caches.match(event.request);
+        if (cached) return cached;
+        
+        // For SPA navigation requests, serve cached index.html
+        if (isNavigationRequest) {
+          const indexCached = await caches.match('/');
+          if (indexCached) return indexCached;
+        }
+        
+        // Last resort - return a basic offline response
+        return new Response('Offline', { status: 503, statusText: 'Service Unavailable' });
       })
   );
 });

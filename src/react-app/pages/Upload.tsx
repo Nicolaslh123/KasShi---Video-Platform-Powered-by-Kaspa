@@ -1,9 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
+import LocalizedLink, { useLocalizedPath } from "../components/LocalizedLink";
 import Navbar from "../components/Navbar";
-import { Upload as UploadIcon, Film, X, Image, Info, Wallet, Loader2, CheckCircle, AlertCircle, User, AtSign, Sparkles, RotateCcw } from "lucide-react";
+import { useElectronTitleBar } from "../components/ElectronTitleBar";
+import { Upload as UploadIcon, Film, X, Image, Info, Wallet, Loader2, CheckCircle, AlertCircle, User, AtSign, Sparkles, RotateCcw, Music } from "lucide-react";
 import { useWallet } from "../contexts/WalletContext";
 import { usePayment } from "../hooks/usePayment";
+import { useLanguage } from "../contexts/LanguageContext";
 
 // localStorage key for persisting upload state
 const UPLOAD_STATE_KEY = "kasshi_upload_draft";
@@ -35,7 +38,10 @@ type UploadStep = "select" | "details" | "uploading" | "complete";
 
 export default function Upload() {
   const navigate = useNavigate();
-  const { isConnected, channel, hasChannel, createChannel, createExternalChannel, externalWallet, isLoading: walletLoading, balance, micropay } = useWallet();
+  const localizedPath = useLocalizedPath();
+  const { t } = useLanguage();
+  const { titleBarPadding } = useElectronTitleBar();
+  const { isConnected, channel, hasChannel, createChannel, createExternalChannel, externalWallet, isLoading: walletLoading, balance, micropay, refreshChannel } = useWallet();
   const { pay, isExternalWallet } = usePayment();
   const [step, setStep] = useState<UploadStep>("select");
   
@@ -75,6 +81,8 @@ export default function Upload() {
   const [channelHandle, setChannelHandle] = useState("");
   const [isCreatingChannel, setIsCreatingChannel] = useState(false);
   const [channelError, setChannelError] = useState<string | null>(null);
+  const [musicProfileExists, setMusicProfileExists] = useState(false);
+  const [copyingFromMusic, setCopyingFromMusic] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [thumbnail, setThumbnail] = useState<File | null>(null);
@@ -83,6 +91,7 @@ export default function Upload() {
   const [description, setDescription] = useState("");
   const [isMembersOnly, setIsMembersOnly] = useState(false);
   const [isPrivate, setIsPrivate] = useState(false);
+  const [priceKas, setPriceKas] = useState("");
   const [videoDuration, setVideoDuration] = useState(0);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStatus, setUploadStatus] = useState("");
@@ -192,7 +201,7 @@ export default function Upload() {
     }
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
@@ -202,6 +211,33 @@ export default function Upload() {
       if (validateVideoFile(file)) {
         setSelectedFile(file);
         setStep("details");
+        
+        // Extract duration and auto-generate thumbnail
+        const duration = await extractVideoDuration(file);
+        if (duration > 0) {
+          setVideoDuration(duration);
+        }
+        
+        if (!thumbnail) {
+          const fileSizeMB = file.size / (1024 * 1024);
+          const loadingMsg = fileSizeMB > 500 
+            ? "Generating thumbnail (large file, this may take a minute)..." 
+            : fileSizeMB > 100 
+              ? "Generating thumbnail (loading video)..." 
+              : "Generating thumbnail...";
+          toast.loading(loadingMsg, { id: "thumb-gen" });
+          const result = await generateThumbnailFromVideo(file);
+          if (result) {
+            setThumbnail(result.file);
+            setThumbnailPreview(result.preview);
+            if (result.duration > 0) {
+              setVideoDuration(result.duration);
+            }
+            toast.success("Thumbnail generated!", { id: "thumb-gen" });
+          } else {
+            toast.error("Couldn't auto-generate thumbnail. Please upload one manually.", { id: "thumb-gen", duration: 5000 });
+          }
+        }
       }
     }
   };
@@ -209,198 +245,183 @@ export default function Upload() {
   const validateVideoFile = (file: File): boolean => {
     const allowedTypes = ["video/mp4", "video/webm", "video/quicktime"];
     if (!allowedTypes.includes(file.type)) {
-      toast.error("Invalid file type. Please use MP4, WebM, or MOV");
+      toast.error(t.upload.invalidFileType || "Invalid file type. Please use MP4, WebM, or MOV");
       return false;
     }
     const maxSize = 10 * 1024 * 1024 * 1024; // 10GB
     if (file.size > maxSize) {
-      toast.error("File too large. Maximum size is 10GB");
+      toast.error(t.upload.fileTooLarge || "File too large. Maximum size is 10GB");
       return false;
     }
     return true;
   };
   
-  // Chunked upload for large files (> 95MB)
-  const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks (smaller for better reliability)
-  const SINGLE_UPLOAD_LIMIT = 95 * 1024 * 1024; // 95MB
-  const MAX_RETRIES = 5; // Retry failed chunks
-  const CHUNK_DELAY_MS = 100; // Small delay between chunks to prevent connection overload
-  
-  const uploadVideoChunked = async (
+  // Upload video to Bunny Stream for HLS encoding
+  const uploadToBunny = async (
     file: File, 
-    channelId: string,
-    onProgress: (percent: number) => void
-  ): Promise<{ url: string; key: string }> => {
-    // Throttle progress updates to prevent excessive re-renders
-    let lastProgressUpdate = 0;
-    const throttledProgress = (percent: number) => {
-      const now = Date.now();
-      if (now - lastProgressUpdate > 200 || percent >= 100) { // Update max every 200ms
-        lastProgressUpdate = now;
-        onProgress(percent);
-      }
-    };
-    
-    // Step 1: Initialize multipart upload
-    const initResponse = await fetch("/api/kasshi/upload/video/init", {
+    title: string,
+    onProgress: (percent: number, status: string) => void
+  ): Promise<{ bunnyVideoId: string; playbackUrl: string }> => {
+    // VERSION 2 - Waits for encoding to complete before returning
+    console.log("[BUNNY v2] Starting upload for:", title, "Size:", (file.size / 1024 / 1024).toFixed(2), "MB");
+    // Step 1: Create video in Bunny Stream
+    onProgress(5, "Creating video...");
+    const createResponse = await fetch("/api/bunny/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        channelId,
-        fileName: file.name,
-        fileType: file.type,
-        fileSize: file.size,
-      }),
+      body: JSON.stringify({ title }),
     });
     
-    if (!initResponse.ok) {
-      const err = await initResponse.json();
-      throw new Error(err.error || "Failed to initialize upload");
+    if (!createResponse.ok) {
+      const err = await createResponse.json();
+      throw new Error(err.error || "Failed to create video in Bunny Stream");
     }
     
-    const { uploadId, key } = await initResponse.json();
+    const { bunnyVideoId, uploadUrl, uploadKey } = await createResponse.json();
+    console.log("[BUNNY v2] Video created:", bunnyVideoId);
     
-    // Step 2: Upload chunks
-    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-    const uploadedParts: { partNumber: number; etag: string }[] = [];
+    // Step 2: Upload file directly to Bunny's upload URL
+    console.log("[BUNNY v2] Uploading file to Bunny CDN...");
+    onProgress(10, "Uploading to server...");
     
-    // Helper to upload a single chunk with retries
-    const uploadChunkWithRetry = async (
-      chunk: Blob,
-      partNumber: number,
-      chunkIndex: number,
-      totalChunks: number
-    ): Promise<{ etag: string }> => {
-      let lastError: Error | null = null;
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
       
-      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-        try {
-          const formData = new FormData();
-          formData.append("chunk", chunk);
-          formData.append("key", key);
-          formData.append("uploadId", uploadId);
-          formData.append("partNumber", partNumber.toString());
-          
-          const result = await new Promise<{ etag: string }>((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            
-            xhr.upload.addEventListener("progress", (e) => {
-              if (e.lengthComputable) {
-                const chunkProgress = e.loaded / e.total;
-                const overallProgress = ((chunkIndex + chunkProgress) / totalChunks) * 100;
-                throttledProgress(overallProgress);
-              }
-            });
-            
-            xhr.addEventListener("load", () => {
-              if (xhr.status >= 200 && xhr.status < 300) {
-                try {
-                  const res = JSON.parse(xhr.responseText);
-                  resolve(res);
-                } catch {
-                  reject(new Error("Invalid server response"));
-                }
-              } else {
-                try {
-                  const err = JSON.parse(xhr.responseText);
-                  reject(new Error(err.error || `Failed to upload part ${partNumber}`));
-                } catch {
-                  reject(new Error(`Chunk upload failed with status ${xhr.status}`));
-                }
-              }
-            });
-            
-            xhr.addEventListener("error", () => reject(new Error("Network error during chunk upload")));
-            xhr.addEventListener("timeout", () => reject(new Error("Chunk upload timed out")));
-            xhr.addEventListener("abort", () => reject(new Error("Chunk upload was aborted")));
-            
-            xhr.open("POST", "/api/kasshi/upload/video/part");
-            xhr.timeout = 2 * 60 * 1000; // 2 minute timeout per chunk (reduced for smaller chunks)
-            xhr.send(formData);
-          });
-          
-          return result;
-        } catch (err) {
-          lastError = err as Error;
-          console.warn(`Chunk ${partNumber} upload attempt ${attempt + 1} failed:`, err);
-          
-          // Wait before retry (longer exponential backoff for SSL recovery)
-          if (attempt < MAX_RETRIES - 1) {
-            const delay = 2000 * Math.pow(2, attempt); // 2s, 4s, 8s, 16s...
-            console.log(`Retrying chunk ${partNumber} in ${delay}ms...`);
-            await new Promise(r => setTimeout(r, delay));
+      xhr.upload.addEventListener("progress", (e) => {
+        if (e.lengthComputable) {
+          // Map upload progress from 10-90%
+          const uploadPercent = (e.loaded / e.total) * 100;
+          const mappedProgress = 10 + (uploadPercent * 0.80);
+          onProgress(Math.round(mappedProgress), "Uploading video...");
+          // Log every 10%
+          if (Math.floor(uploadPercent) % 10 === 0) {
+            console.log("[BUNNY v2] Upload:", Math.round(uploadPercent) + "%");
           }
         }
-      }
-      
-      throw lastError || new Error(`Failed to upload chunk ${partNumber} after ${MAX_RETRIES} attempts`);
-    };
-    
-    try {
-      let successfulChunks = 0;
-      
-      for (let i = 0; i < totalChunks; i++) {
-        const start = i * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, file.size);
-        const chunk = file.slice(start, end);
-        const partNumber = i + 1;
-        
-        // Add small delay between chunks to prevent connection overload
-        if (i > 0) {
-          await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
-        }
-        
-        const { etag } = await uploadChunkWithRetry(chunk, partNumber, i, totalChunks);
-        
-        uploadedParts.push({ partNumber, etag });
-        successfulChunks++;
-        
-        // Log progress every 10 chunks or on last chunk
-        if (successfulChunks % 10 === 0 || i === totalChunks - 1) {
-          console.log(`Upload progress: ${successfulChunks}/${totalChunks} chunks uploaded`);
-        }
-      }
-      
-      // Verify all chunks were uploaded before completing
-      if (uploadedParts.length !== totalChunks) {
-        throw new Error(`Upload incomplete: only ${uploadedParts.length} of ${totalChunks} chunks uploaded`);
-      }
-      
-      console.log(`All ${totalChunks} chunks uploaded successfully, completing multipart upload...`);
-      
-      // Step 3: Complete multipart upload with size verification
-      const completeResponse = await fetch("/api/kasshi/upload/video/complete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          key, 
-          uploadId, 
-          parts: uploadedParts,
-          expectedSize: file.size 
-        }),
       });
       
-      if (!completeResponse.ok) {
-        const err = await completeResponse.json();
-        throw new Error(err.error || "Failed to complete upload");
+      xhr.addEventListener("load", () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          reject(new Error(`Upload failed with status ${xhr.status}`));
+        }
+      });
+      
+      xhr.addEventListener("error", () => reject(new Error("Network error during upload")));
+      xhr.addEventListener("timeout", () => reject(new Error("Upload timed out")));
+      xhr.addEventListener("abort", () => reject(new Error("Upload cancelled")));
+      
+      xhr.open("PUT", uploadUrl);
+      xhr.setRequestHeader("AccessKey", uploadKey);
+      xhr.timeout = 30 * 60 * 1000; // 30 minute timeout for large files
+      xhr.send(file);
+    });
+    
+    console.log("[BUNNY v2] Upload complete! Waiting for Bunny encoding (this may take several minutes)...");
+    onProgress(85, "Encoding started - please wait...");
+    
+    // MUST wait for Bunny to finish encoding before returning
+    // The upload bar will NOT complete until video is fully playable
+    const startTime = Date.now();
+    const maxWaitTime = 30 * 60 * 1000; // 30 minutes max wait (4K videos can take a while)
+    const pollInterval = 3000; // Check every 3 seconds
+    
+    while (true) {
+      // Check timeout
+      if (Date.now() - startTime >= maxWaitTime) {
+        throw new Error("Encoding is taking longer than expected (30+ minutes). Please try again with a smaller file or contact support.");
       }
       
-      const result = await completeResponse.json();
-      return { url: result.url, key: result.key };
-    } catch (error) {
-      // Abort upload on error to clean up
-      try {
-        await fetch("/api/kasshi/upload/video/abort", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key, uploadId }),
-        });
-      } catch {
-        // Ignore abort errors
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      
+      const statusResponse = await fetch(`/api/bunny/status/${bunnyVideoId}`);
+      if (!statusResponse.ok) {
+        console.log("[BUNNY v2] Status check failed, retrying...");
+        continue;
       }
-      throw error;
+      
+      const statusData = await statusResponse.json();
+      const statusCode = Number(statusData.statusCode); // Ensure it's a number
+      const encodeProgress = statusData.encodeProgress || 0;
+      const elapsedMin = Math.floor((Date.now() - startTime) / 60000);
+      const elapsedSec = Math.floor(((Date.now() - startTime) % 60000) / 1000);
+      const timeStr = `${elapsedMin}:${String(elapsedSec).padStart(2, '0')}`;
+      
+      console.log(`[BUNNY v2] Status: ${statusCode}, Progress: ${encodeProgress}%, Time: ${timeStr}`);
+      
+      // Map encoding progress from 85-99%
+      const mappedProgress = 85 + Math.min(encodeProgress * 0.14, 14);
+      
+      if (statusCode === 4) {
+        // FINISHED - encoding complete, video is playable
+        const playbackUrl = statusData.playbackUrl;
+        if (!playbackUrl) {
+          throw new Error("Encoding finished but no playback URL returned. Please contact support.");
+        }
+        console.log("[BUNNY v2] ✓ ENCODING COMPLETE! Video is ready to play:", playbackUrl);
+        onProgress(99, "Video ready!");
+        return { bunnyVideoId, playbackUrl };
+      } else if (statusCode === 5 || statusCode === 6) {
+        // Error or upload failed
+        throw new Error("Video encoding failed. Please try again with a different file format.");
+      } else if (statusCode === 3) {
+        // Transcoding in progress
+        onProgress(Math.round(mappedProgress), `Encoding: ${encodeProgress}%`);
+      } else if (statusCode === 2) {
+        // Processing - no timer since encoding hasn't started
+        onProgress(86, "Processing...");
+      } else if (statusCode === 1) {
+        // Uploaded, waiting to start - no timer
+        onProgress(85, "In queue...");
+      } else {
+        // Status 0 or unknown - no timer
+        onProgress(85, "Starting...");
+      }
     }
   };
+
+  // Simple duration extraction - more reliable than full thumbnail generation
+  const extractVideoDuration = useCallback(async (videoFile: File): Promise<number> => {
+    return new Promise((resolve) => {
+      const video = document.createElement("video");
+      video.preload = "metadata";
+      video.muted = true;
+      
+      const cleanup = () => {
+        try {
+          URL.revokeObjectURL(video.src);
+          video.remove();
+        } catch {
+          // Ignore cleanup errors
+        }
+      };
+      
+      const timeout = setTimeout(() => {
+        cleanup();
+        resolve(0);
+      }, 10000); // 10 second timeout
+      
+      video.onloadedmetadata = () => {
+        clearTimeout(timeout);
+        const duration = video.duration;
+        cleanup();
+        if (duration && Number.isFinite(duration) && duration > 0) {
+          resolve(Math.floor(duration));
+        } else {
+          resolve(0);
+        }
+      };
+      
+      video.onerror = () => {
+        clearTimeout(timeout);
+        cleanup();
+        resolve(0);
+      };
+      
+      video.src = URL.createObjectURL(videoFile);
+    });
+  }, []);
 
   // Auto-generate thumbnail from video frame
   // For large videos, this may take longer as the browser needs to load enough data to seek
@@ -603,7 +624,13 @@ export default function Upload() {
         setSelectedFile(file);
         setStep("details");
         
-        // Auto-generate thumbnail and extract duration
+        // Always extract duration first (more reliable than thumbnail generation)
+        const duration = await extractVideoDuration(file);
+        if (duration > 0) {
+          setVideoDuration(duration);
+        }
+        
+        // Auto-generate thumbnail if none exists
         if (!thumbnail) {
           const fileSizeMB = file.size / (1024 * 1024);
           const loadingMsg = fileSizeMB > 500 
@@ -616,18 +643,13 @@ export default function Upload() {
           if (result) {
             setThumbnail(result.file);
             setThumbnailPreview(result.preview);
-            setVideoDuration(result.duration);
+            // Update duration if we got a better value from thumbnail generation
+            if (result.duration > 0) {
+              setVideoDuration(result.duration);
+            }
             toast.success("Thumbnail generated!", { id: "thumb-gen" });
           } else {
             toast.error("Couldn't auto-generate thumbnail. Please upload one manually.", { id: "thumb-gen", duration: 5000 });
-          }
-        } else {
-          // If user provides custom thumbnail, still extract duration from video
-          toast.loading("Extracting video info...", { id: "duration-extract" });
-          const durationResult = await generateThumbnailFromVideo(file);
-          toast.dismiss("duration-extract");
-          if (durationResult) {
-            setVideoDuration(durationResult.duration);
           }
         }
       }
@@ -676,71 +698,20 @@ export default function Upload() {
         throw new Error("Platform wallet not configured. Please contact the administrator.");
       }
       
-      // Step 1: Upload video file FIRST (before charging fee)
+      // Step 1: Upload video to Bunny Stream for HLS encoding
       setUploadStatus("Uploading video...");
       setUploadProgress(5);
       
-      let videoResult: { url: string; key: string };
+      const bunnyResult = await uploadToBunny(
+        selectedFile,
+        title.trim(),
+        (percent, status) => {
+          setUploadProgress(percent);
+          setUploadStatus(status);
+        }
+      );
       
-      if (selectedFile.size > SINGLE_UPLOAD_LIMIT) {
-        // Use chunked upload for large files
-        videoResult = await uploadVideoChunked(
-          selectedFile,
-          channel!.id.toString(),
-          (percent) => {
-            // Map 0-100% of upload to 5-35% of total progress
-            const mappedProgress = 5 + (percent * 0.30);
-            setUploadProgress(Math.round(mappedProgress));
-          }
-        );
-      } else {
-        // Use single upload for small files (XMLHttpRequest for progress)
-        videoResult = await new Promise<{ url: string; key: string }>((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          const videoFormData = new FormData();
-          videoFormData.append("file", selectedFile);
-          videoFormData.append("channelId", channel!.id.toString());
-          
-          xhr.upload.addEventListener("progress", (e) => {
-            if (e.lengthComputable) {
-              // Map 0-100% of upload to 5-35% of total progress
-              const uploadPercent = (e.loaded / e.total) * 100;
-              const mappedProgress = 5 + (uploadPercent * 0.30);
-              setUploadProgress(Math.round(mappedProgress));
-            }
-          });
-          
-          xhr.addEventListener("load", () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              try {
-                const result = JSON.parse(xhr.responseText);
-                resolve(result);
-              } catch {
-                reject(new Error("Invalid server response"));
-              }
-            } else {
-              try {
-                const err = JSON.parse(xhr.responseText);
-                reject(new Error(err.error || "Failed to upload video"));
-              } catch {
-                reject(new Error(`Upload failed with status ${xhr.status}`));
-              }
-            }
-          });
-          
-          xhr.addEventListener("error", () => reject(new Error("Network error during upload")));
-          xhr.addEventListener("timeout", () => reject(new Error("Upload timed out")));
-          xhr.addEventListener("abort", () => reject(new Error("Upload cancelled")));
-          
-          xhr.open("POST", "/api/kasshi/upload/video");
-          xhr.timeout = 10 * 60 * 1000; // 10 minute timeout
-          xhr.send(videoFormData);
-        });
-      }
-      
-      setUploadProgress(40);
-      
-      // Step 2: Upload thumbnail if provided
+      // Step 2: Upload custom thumbnail if provided (Bunny auto-generates one too)
       let thumbnailUrl = null;
       if (thumbnail) {
         setUploadStatus("Uploading thumbnail...");
@@ -758,10 +729,15 @@ export default function Upload() {
           thumbnailUrl = thumbResult.url;
         }
       }
-      setUploadProgress(60);
+      setUploadProgress(96);
       
-      // Step 3: Create video record (still unpublished until fee paid)
+      // Step 3: Create video record with Bunny Stream info
       setUploadStatus("Creating video record...");
+      // Calculate final price: empty or 0 = free, otherwise must be >= 0.11
+      const finalPriceKas = priceKas === '' || parseFloat(priceKas) === 0 
+        ? '0' 
+        : (parseFloat(priceKas) >= 0.11 ? priceKas : '0');
+      
       const createResponse = await fetch("/api/kasshi/videos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -769,11 +745,14 @@ export default function Upload() {
           channelId: channel!.id,
           title: title.trim(),
           description: description.trim() || null,
-          videoUrl: videoResult.url,
+          videoUrl: bunnyResult.playbackUrl, // HLS playlist URL after encoding completes
           thumbnailUrl: thumbnailUrl,
           durationSeconds: videoDuration,
           isMembersOnly: isMembersOnly,
           isPrivate: isPrivate,
+          priceKas: finalPriceKas,
+          bunnyVideoId: bunnyResult.bunnyVideoId,
+          bunnyStatus: "finished", // Encoding is complete when we reach this point
         }),
       });
       
@@ -782,7 +761,7 @@ export default function Upload() {
       }
       
       const video = await createResponse.json();
-      setUploadProgress(80);
+      setUploadProgress(97);
       
       // Step 4: Pay upload fee AFTER successful upload
       // This ensures user doesn't lose KAS if upload fails
@@ -797,14 +776,14 @@ export default function Upload() {
           // Video is uploaded but fee failed - notify user
           toast.error("Video uploaded but fee payment failed. Please consolidate your wallet in Settings and try again.", { duration: 6000 });
           // Still navigate to the video since it's already uploaded
-          setTimeout(() => navigate(`/watch/${video.publicId || video.id}`), 2000);
+          setTimeout(() => navigate(localizedPath(`/watch/${video.publicId || video.id}`)), 2000);
           setUploadProgress(100);
           setStep("complete");
           return;
         }
         // Video is uploaded but fee failed - still show success since video is live
         toast("Video uploaded! Fee payment failed but your video is live.", { icon: "⚠️", duration: 5000 });
-        setTimeout(() => navigate(`/watch/${video.publicId || video.id}`), 2000);
+        setTimeout(() => navigate(localizedPath(`/watch/${video.publicId || video.id}`)), 2000);
         setUploadProgress(100);
         setStep("complete");
         return;
@@ -814,11 +793,40 @@ export default function Upload() {
       setUploadProgress(100);
       setStep("complete");
       
-      toast.success("Video uploaded successfully!");
+      // Video is ready to watch
+      toast.success("Video uploaded successfully!", { duration: 4000 });
+      
+      // Track referral upload progress (non-blocking)
+      if (videoDuration >= 30) {
+        try {
+          // Compute a simple hash from the first 10MB of the file for deduplication
+          const hashBuffer = await selectedFile.slice(0, 10 * 1024 * 1024).arrayBuffer();
+          const hashArray = await crypto.subtle.digest("SHA-256", hashBuffer);
+          const hashHex = Array.from(new Uint8Array(hashArray)).map(b => b.toString(16).padStart(2, "0")).join("");
+          
+          const headers: HeadersInit = { "Content-Type": "application/json" };
+          if (externalWallet?.authToken) {
+            headers["Authorization"] = `Bearer ${externalWallet.authToken}`;
+          }
+          
+          fetch("/api/referral/track-upload", {
+            method: "POST",
+            headers,
+            credentials: "include",
+            body: JSON.stringify({
+              videoId: video.id,
+              duration: videoDuration,
+              videoHash: hashHex,
+            }),
+          }).catch(() => {}); // Silent fail - don't block the success flow
+        } catch {
+          // Ignore hash computation errors
+        }
+      }
       
       // Navigate to video after delay
       setTimeout(() => {
-        navigate(`/watch/${video.publicId || video.id}`);
+        navigate(localizedPath(`/watch/${video.publicId || video.id}`));
       }, 2000);
       
     } catch (err) {
@@ -883,13 +891,72 @@ export default function Upload() {
     setIsCreatingChannel(false);
   };
 
+  // Check if user has a music profile to copy from
+  const checkMusicProfile = useCallback(async () => {
+    try {
+      const headers: Record<string, string> = {};
+      const token = externalWallet?.authToken;
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      
+      const res = await fetch('/api/kasshi/copy-from-music', {
+        headers,
+        credentials: 'include'
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setMusicProfileExists(data.exists);
+      }
+    } catch (error) {
+      console.error('Error checking music profile:', error);
+    }
+  }, [externalWallet?.authToken]);
+
+  // Copy profile data from music site
+  const handleCopyFromMusic = async () => {
+    setCopyingFromMusic(true);
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const token = externalWallet?.authToken;
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      
+      const res = await fetch('/api/kasshi/copy-from-music', {
+        method: 'POST',
+        headers,
+        credentials: 'include'
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'Failed to copy profile');
+      }
+      
+      // Channel was created by the backend - refresh channel state
+      await refreshChannel();
+      
+      toast.success('Profile copied from KasShi Music!');
+    } catch (error) {
+      console.error('Error copying music profile:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to copy profile');
+    } finally {
+      setCopyingFromMusic(false);
+    }
+  };
+
+  // Check for music profile when showing channel creation
+  useEffect(() => {
+    if (isConnected && !hasChannel) {
+      checkMusicProfile();
+    }
+  }, [isConnected, hasChannel, checkMusicProfile]);
+
   return (
-    <div className="min-h-screen w-full bg-slate-950 flex flex-col">
+    <div className={`min-h-screen w-full bg-slate-950 flex flex-col overflow-x-hidden ${titleBarPadding}`}>
       <Navbar />
       
-      <main className="pt-24 pb-12 px-4 max-w-4xl mx-auto">
-        <h1 className="text-3xl font-bold text-white mb-2">Upload Video</h1>
-        <p className="text-slate-400 mb-8">Share your content and earn KAS from every view</p>
+      <main className="pt-20 sm:pt-24 pb-12 px-3 sm:px-4 max-w-4xl mx-auto w-full">
+        <h1 className="text-2xl sm:text-3xl font-bold text-white mb-2">{t.upload.uploadVideo}</h1>
+        <p className="text-slate-400 text-sm sm:text-base mb-6 sm:mb-8">{t.upload.title}</p>
 
         {/* Draft recovery banner */}
         {showDraftRecovery && savedDraft && (
@@ -939,6 +1006,12 @@ export default function Upload() {
                 setSelectedFile(file);
                 setStep("details");
                 
+                // Always extract duration first
+                const duration = await extractVideoDuration(file);
+                if (duration > 0) {
+                  setVideoDuration(duration);
+                }
+                
                 // Auto-generate thumbnail if none restored from draft
                 if (!thumbnailPreview && !thumbnail) {
                   toast.loading("Generating thumbnail...", { id: "thumb-gen" });
@@ -946,6 +1019,9 @@ export default function Upload() {
                   if (result) {
                     setThumbnail(result.file);
                     setThumbnailPreview(result.preview);
+                    if (result.duration > 0) {
+                      setVideoDuration(result.duration);
+                    }
                     toast.success("Thumbnail generated!", { id: "thumb-gen" });
                   } else {
                     toast.dismiss("thumb-gen");
@@ -972,15 +1048,15 @@ export default function Upload() {
                 <Wallet className="w-6 h-6 text-amber-400" />
               </div>
               <div className="flex-1">
-                <h3 className="font-semibold text-amber-400 text-lg">Connect Wallet to Upload</h3>
+                <h3 className="font-semibold text-amber-400 text-lg">{t.auth.connectWallet}</h3>
                 <p className="text-slate-400 text-sm mt-1">
-                  You'll need to connect your Kaspa wallet to upload videos and start earning. Your wallet address will be linked to your channel for receiving payments.
+                  {t.upload.connectWalletDesc}
                 </p>
                 <button 
                   onClick={() => setIsWalletModalOpen(true)}
                   className="mt-4 px-5 py-2.5 bg-gradient-to-r from-teal-500 to-cyan-600 hover:from-teal-400 hover:to-cyan-500 text-white rounded-full font-medium text-sm transition-all shadow-lg shadow-teal-500/25"
                 >
-                  Connect Wallet
+                  {t.auth.connectWallet}
                 </button>
               </div>
             </div>
@@ -995,9 +1071,9 @@ export default function Upload() {
                 <Sparkles className="w-6 h-6 text-violet-400" />
               </div>
               <div className="flex-1">
-                <h3 className="font-semibold text-violet-400 text-lg">Create Your Channel</h3>
+                <h3 className="font-semibold text-violet-400 text-lg">{t.channel.createChannel}</h3>
                 <p className="text-slate-400 text-sm mt-1 mb-4">
-                  Set up your creator channel to start uploading videos. Your channel will be linked to your Kaspa wallet for receiving earnings.
+                  {t.upload.createChannelDesc}
                 </p>
                 
                 {channelError && (
@@ -1011,7 +1087,7 @@ export default function Upload() {
                   <div>
                     <label className="block text-sm font-medium text-white mb-2 flex items-center gap-2">
                       <User className="w-4 h-4 text-slate-400" />
-                      Channel Name
+                      {t.upload.channelName}
                     </label>
                     <input
                       type="text"
@@ -1026,7 +1102,7 @@ export default function Upload() {
                   <div>
                     <label className="block text-sm font-medium text-white mb-2 flex items-center gap-2">
                       <AtSign className="w-4 h-4 text-slate-400" />
-                      Channel Handle
+                      {t.upload.channelHandle}
                     </label>
                     <input
                       type="text"
@@ -1037,27 +1113,48 @@ export default function Upload() {
                       className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-violet-500 transition-colors"
                     />
                     <p className="text-slate-500 text-xs mt-1">
-                      This will be your unique @handle. Letters, numbers, and underscores only.
+                      This will be your unique @{t.channel.handle || 'handle'}. Letters, numbers, and underscores only.
                     </p>
                   </div>
                   
-                  <button 
-                    onClick={handleCreateChannel}
-                    disabled={isCreatingChannel || !channelName.trim() || !channelHandle.trim()}
-                    className="px-6 py-3 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-600 disabled:cursor-not-allowed text-white rounded-full font-semibold transition-all shadow-lg shadow-violet-500/25 hover:shadow-violet-500/40 disabled:shadow-none flex items-center gap-2"
-                  >
-                    {isCreatingChannel ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Creating Channel...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-4 h-4" />
-                        Create Channel
-                      </>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {musicProfileExists && (
+                      <button
+                        onClick={handleCopyFromMusic}
+                        disabled={copyingFromMusic}
+                        className="px-4 py-3 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-white rounded-full font-medium transition-all flex items-center gap-2"
+                      >
+                        {copyingFromMusic ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Copying...
+                          </>
+                        ) : (
+                          <>
+                            <Music className="w-4 h-4" />
+                            Copy Music Profile
+                          </>
+                        )}
+                      </button>
                     )}
-                  </button>
+                    <button 
+                      onClick={handleCreateChannel}
+                      disabled={isCreatingChannel || !channelName.trim() || !channelHandle.trim()}
+                      className="px-6 py-3 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 disabled:from-slate-700 disabled:to-slate-600 disabled:cursor-not-allowed text-white rounded-full font-semibold transition-all shadow-lg shadow-violet-500/25 hover:shadow-violet-500/40 disabled:shadow-none flex items-center gap-2"
+                    >
+                      {isCreatingChannel ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          {t.common.loading}
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4" />
+                          {t.channel.createChannel}
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1074,12 +1171,12 @@ export default function Upload() {
               <p className="text-white font-medium">{channel.name}</p>
               <p className="text-slate-400 text-sm">@{channel.handle}</p>
             </div>
-            <Link 
+            <LocalizedLink 
               to={`/channel/${channel.handle}`}
               className="text-teal-400 hover:text-teal-300 text-sm font-medium transition-colors"
             >
-              View Channel
-            </Link>
+              {t.nav.myChannel}
+            </LocalizedLink>
           </div>
         )}
 
@@ -1108,14 +1205,14 @@ export default function Upload() {
             </div>
             
             <h2 className="text-xl font-semibold text-white mb-2">
-              Drag and drop video files to upload
+              {t.upload.dragDrop}
             </h2>
             <p className="text-slate-400 mb-6">
-              Your videos will be public. Supported formats: MP4, WebM, MOV (max 10GB)
+              {t.upload.or} MP4, WebM, MOV (max 10GB)
             </p>
             
             <button className="px-6 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-full font-medium transition-colors">
-              Select Files
+              {t.upload.browse}
             </button>
           </div>
         )}
@@ -1130,32 +1227,43 @@ export default function Upload() {
               </div>
             )}
             
-            {/* Selected file preview */}
-            <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 flex items-center gap-4">
-              <div className="w-16 h-16 rounded-lg bg-slate-800 flex items-center justify-center flex-shrink-0">
-                <Film className="w-8 h-8 text-slate-400" />
+            {/* Video preview player */}
+            <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+              <div className="aspect-video bg-black relative">
+                <video
+                  src={URL.createObjectURL(selectedFile)}
+                  controls
+                  className="w-full h-full object-contain"
+                  preload="metadata"
+                />
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-white font-medium truncate">{selectedFile.name}</p>
-                <p className="text-sm text-slate-400">{formatFileSize(selectedFile.size)}</p>
+              <div className="p-4 flex items-center gap-4">
+                <div className="w-10 h-10 rounded-lg bg-slate-800 flex items-center justify-center flex-shrink-0">
+                  <Film className="w-5 h-5 text-teal-400" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-white font-medium truncate">{selectedFile.name}</p>
+                  <p className="text-sm text-slate-400">{formatFileSize(selectedFile.size)} • {videoDuration > 0 ? `${Math.floor(videoDuration / 60)}:${String(videoDuration % 60).padStart(2, '0')}` : (t.common.loading || 'Loading...')}</p>
+                </div>
+                <button 
+                  onClick={() => {
+                    setSelectedFile(null);
+                    setVideoDuration(0);
+                    setStep("select");
+                  }}
+                  className="p-2 hover:bg-slate-800 rounded-full transition-colors"
+                  title="Remove video"
+                >
+                  <X className="w-5 h-5 text-slate-400" />
+                </button>
               </div>
-              <button 
-                onClick={() => {
-                  setSelectedFile(null);
-                  setVideoDuration(0);
-                  setStep("select");
-                }}
-                className="p-2 hover:bg-slate-800 rounded-full transition-colors"
-              >
-                <X className="w-5 h-5 text-slate-400" />
-              </button>
             </div>
 
-            <div className="grid md:grid-cols-2 gap-6">
-              {/* Thumbnail */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Thumbnail - constrained height on mobile */}
               <div 
                 onClick={() => thumbnailInputRef.current?.click()}
-                className="aspect-video bg-slate-900 rounded-xl border-2 border-dashed border-slate-700 flex flex-col items-center justify-center cursor-pointer hover:border-slate-600 transition-colors overflow-hidden"
+                className="aspect-video max-h-[200px] md:max-h-none bg-slate-900 rounded-xl border-2 border-dashed border-slate-700 flex flex-col items-center justify-center cursor-pointer hover:border-slate-600 transition-colors overflow-hidden"
               >
                 <input
                   ref={thumbnailInputRef}
@@ -1172,7 +1280,7 @@ export default function Upload() {
                       className="w-full h-full object-cover"
                     />
                     <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center gap-2 transition-opacity">
-                      <p className="text-white text-sm font-medium">Click to upload custom</p>
+                      <p className="text-white text-sm font-medium">{t.upload?.clickToUploadCustom || 'Click to upload custom'}</p>
                       {selectedFile && (
                         <button
                           type="button"
@@ -1222,7 +1330,7 @@ export default function Upload() {
                           className="px-3 py-1.5 bg-teal-500/80 hover:bg-teal-500 text-white text-xs rounded-full transition-colors"
                         >
                           <RotateCcw className="w-3 h-3 inline mr-1" />
-                          Random frame
+                          {t.upload?.randomFrame || 'Random frame'}
                         </button>
                       )}
                     </div>
@@ -1230,8 +1338,8 @@ export default function Upload() {
                 ) : (
                   <>
                     <Image className="w-10 h-10 text-slate-500 mb-2" />
-                    <p className="text-slate-400 text-sm">Upload thumbnail</p>
-                    <p className="text-slate-500 text-xs mt-1">Auto-generated or upload custom</p>
+                    <p className="text-slate-400 text-sm">{t.upload.uploadThumbnail || 'Upload thumbnail'}</p>
+                    <p className="text-slate-500 text-xs mt-1">{t.upload.autoGeneratedOrCustom || 'Auto-generated or upload custom'}</p>
                   </>
                 )}
               </div>
@@ -1240,13 +1348,13 @@ export default function Upload() {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-white mb-2">
-                    Title <span className="text-red-400">*</span>
+                    {t.upload.videoTitle} <span className="text-red-400">*</span>
                   </label>
                   <input
                     type="text"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
-                    placeholder="Add a title that describes your video"
+                    placeholder={t.upload.titlePlaceholder || "Add a title that describes your video"}
                     maxLength={100}
                     className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-teal-500 transition-colors"
                   />
@@ -1255,27 +1363,80 @@ export default function Upload() {
                 
                 <div>
                   <label className="block text-sm font-medium text-white mb-2">
-                    Description
+                    {t.upload.description}
                   </label>
                   <textarea
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
-                    placeholder="Tell viewers about your video"
+                    placeholder={t.upload.descriptionPlaceholder || "Tell viewers about your video"}
                     rows={4}
                     maxLength={5000}
                     className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-teal-500 transition-colors resize-none"
                   />
                 </div>
                 
+                {/* Video Price */}
+                <div className="p-4 bg-slate-900/50 rounded-xl border border-slate-800">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 flex-shrink-0 rounded-full bg-gradient-to-br from-teal-500/20 to-emerald-500/20 flex items-center justify-center border border-teal-500/30">
+                      <KaspaIcon size={20} />
+                    </div>
+                    <div className="flex-1">
+                      <h4 className="font-medium text-white text-sm sm:text-base">{t.upload?.videoPrice || 'Video Price'}</h4>
+                      <p className="text-xs sm:text-sm text-slate-400 mb-3">{t.upload?.videoPriceDesc || 'Set a price for viewers to watch this video. Leave empty for free.'}</p>
+                      <div className="flex items-center gap-3">
+                        <div className="relative flex-1">
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={priceKas}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              // Allow empty or valid positive numbers
+                              if (val === '' || parseFloat(val) >= 0) {
+                                setPriceKas(val);
+                              }
+                            }}
+                            onBlur={() => {
+                              // Validate on blur: if between 0 and 0.11, warn or reset
+                              const price = parseFloat(priceKas);
+                              if (priceKas !== '' && price > 0 && price < 0.11) {
+                                toast.error('Minimum paid price is 0.11 KAS. Setting to free.');
+                                setPriceKas('');
+                              }
+                            }}
+                            placeholder="0"
+                            className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-teal-500 transition-colors pr-12"
+                          />
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-teal-400 font-medium">KAS</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setPriceKas('')}
+                          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            priceKas === '' || priceKas === '0' 
+                              ? 'bg-teal-500/20 text-teal-400 border border-teal-500/50' 
+                              : 'bg-slate-700 text-slate-300 border border-slate-600 hover:bg-slate-600'
+                          }`}
+                        >
+                          {t.video?.free || 'Free'}
+                        </button>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-2">{t.upload?.minPriceNote || 'Minimum paid price: 0.11 KAS • You receive 95% of paid views'}</p>
+                    </div>
+                  </div>
+                </div>
+                
                 {/* Members-only toggle */}
-                <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-xl border border-slate-800">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center border border-purple-500/30">
+                <div className="flex items-center justify-between gap-3 p-4 bg-slate-900/50 rounded-xl border border-slate-800">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 flex-shrink-0 rounded-full bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center border border-purple-500/30">
                       <Sparkles className="w-5 h-5 text-purple-400" />
                     </div>
-                    <div>
-                      <h4 className="font-medium text-white">Members Only</h4>
-                      <p className="text-sm text-slate-400">Restrict this video to channel members</p>
+                    <div className="min-w-0">
+                      <h4 className="font-medium text-white text-sm sm:text-base">{t.upload.membersOnly}</h4>
+                      <p className="text-xs sm:text-sm text-slate-400 truncate">{t.upload.membersOnlyDesc}</p>
                     </div>
                   </div>
                   <button
@@ -1294,16 +1455,16 @@ export default function Upload() {
                 </div>
                 
                 {/* Private video toggle */}
-                <div className="flex items-center justify-between p-4 bg-slate-900/50 rounded-xl border border-slate-800">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-slate-500/20 to-slate-600/20 flex items-center justify-center border border-slate-500/30">
+                <div className="flex items-center justify-between gap-3 p-4 bg-slate-900/50 rounded-xl border border-slate-800">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 flex-shrink-0 rounded-full bg-gradient-to-br from-slate-500/20 to-slate-600/20 flex items-center justify-center border border-slate-500/30">
                       <svg className="w-5 h-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                         <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                       </svg>
                     </div>
-                    <div>
-                      <h4 className="font-medium text-white">Private Video</h4>
-                      <p className="text-sm text-slate-400">Only you can see this video</p>
+                    <div className="min-w-0">
+                      <h4 className="font-medium text-white text-sm sm:text-base">{t.upload.private}</h4>
+                      <p className="text-xs sm:text-sm text-slate-400 truncate">{t.upload.privateDesc}</p>
                     </div>
                   </div>
                   <button
@@ -1328,11 +1489,11 @@ export default function Upload() {
               <div className="flex items-start gap-3">
                 <Info className="w-5 h-5 text-teal-400 flex-shrink-0 mt-0.5" />
                 <div>
-                  <h3 className="font-medium text-white">Earnings Structure</h3>
+                  <h3 className="font-medium text-white">{t.upload?.earningsStructure || 'Earnings Structure'}</h3>
                   <ul className="mt-2 space-y-1 text-sm text-slate-400">
-                    <li>• <span className="text-teal-400">95%</span> of view payments (0.11-0.25 KAS based on video length)</li>
-                    <li>• <span className="text-teal-400">0.5 KAS</span> per subscription (100% to you)</li>
-                    <li>• <span className="text-teal-400">100%</span> of tips and memberships</li>
+                    <li>• <span className="text-teal-400">95%</span> {t.upload?.viewPayments || 'of view payments (0.11-0.25 KAS based on video length)'}</li>
+                    <li>• <span className="text-teal-400">0.5 KAS</span> {t.upload?.subscriptionEarnings || 'per subscription (100% to you)'}</li>
+                    <li>• <span className="text-teal-400">100%</span> {t.upload?.tipsAndMemberships || 'of tips and memberships'}</li>
                   </ul>
                 </div>
               </div>
@@ -1342,8 +1503,8 @@ export default function Upload() {
             <div className="p-4 bg-gradient-to-r from-teal-500/10 to-cyan-500/10 rounded-xl border border-teal-500/30">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-white font-medium">Upload Fee</p>
-                  <p className="text-slate-400 text-sm">One-time fee to publish your video</p>
+                  <p className="text-white font-medium">{t.upload?.uploadFee || 'Upload Fee'}</p>
+                  <p className="text-slate-400 text-sm">{t.upload?.oneTimeFee || 'One-time fee to publish your video'}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <KaspaIcon size={20} />
@@ -1352,14 +1513,14 @@ export default function Upload() {
                 </div>
                 <p className="text-zinc-500 text-xs mt-1">
                   {selectedFile && selectedFile.size < 1024 * 1024 * 1024 
-                    ? "Under 1GB" 
+                    ? (t.upload.under1GB || "Under 1GB")
                     : selectedFile && selectedFile.size >= 5 * 1024 * 1024 * 1024 
-                      ? "Over 5GB" 
+                      ? (t.upload.over5GB || "Over 5GB") 
                       : "1GB - 5GB"}
                 </p>
                 {balance !== null && selectedFile && Number(balance) < getUploadFee(selectedFile.size) && (
                   <p className="text-red-400 text-sm mt-2">
-                    Insufficient balance. You have {Number(balance).toFixed(2)} KAS.
+                    {t.video.insufficientBalance || 'Insufficient balance'}. {t.settings.youHave || 'You have'} {Number(balance).toFixed(2)} KAS.
                   </p>
                 )}
               </div>
@@ -1367,18 +1528,18 @@ export default function Upload() {
 
             {/* Action buttons */}
             <div className="flex items-center justify-end gap-4">
-              <Link 
+              <LocalizedLink 
                 to="/"
                 className="px-6 py-3 text-slate-400 hover:text-white transition-colors"
               >
-                Cancel
-              </Link>
+                {t.common.cancel}
+              </LocalizedLink>
               <button 
                 onClick={handleUpload}
                 disabled={!title.trim()}
                 className="px-8 py-3 bg-gradient-to-r from-teal-500 to-cyan-600 hover:from-teal-400 hover:to-cyan-500 disabled:from-slate-700 disabled:to-slate-600 disabled:cursor-not-allowed text-white rounded-full font-semibold transition-all shadow-lg shadow-teal-500/25 hover:shadow-teal-500/40 disabled:shadow-none"
               >
-                Upload Video
+                {t.upload.uploadVideo}
               </button>
             </div>
           </div>
@@ -1391,7 +1552,7 @@ export default function Upload() {
               <Loader2 className="w-10 h-10 text-teal-400 animate-spin" />
             </div>
             
-            <h2 className="text-xl font-semibold text-white mb-2">Uploading your video</h2>
+            <h2 className="text-xl font-semibold text-white mb-2">{t.upload.uploading}</h2>
             <p className="text-slate-400 mb-6">{uploadStatus}</p>
             
             <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden">
@@ -1400,7 +1561,7 @@ export default function Upload() {
                 style={{ width: `${uploadProgress}%` }}
               />
             </div>
-            <p className="text-slate-400 mt-2">{uploadProgress}% complete</p>
+            <p className="text-slate-400 mt-2">{uploadProgress}% {t.common.complete || 'complete'}</p>
           </div>
         )}
 
@@ -1411,8 +1572,8 @@ export default function Upload() {
               <CheckCircle className="w-10 h-10 text-green-400" />
             </div>
             
-            <h2 className="text-xl font-semibold text-white mb-2">Upload Complete!</h2>
-            <p className="text-slate-400 mb-6">Your video is now live. Redirecting...</p>
+            <h2 className="text-xl font-semibold text-white mb-2">{t.upload.success}</h2>
+            <p className="text-slate-400 mb-6">{t.common.loading}</p>
             
             <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden">
               <div className="h-full bg-gradient-to-r from-green-500 to-emerald-500 w-full" />

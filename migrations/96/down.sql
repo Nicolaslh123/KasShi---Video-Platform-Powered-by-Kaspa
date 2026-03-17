@@ -1,0 +1,1 @@
+ALTER TABLE music_profiles DROP COLUMN user_id;
