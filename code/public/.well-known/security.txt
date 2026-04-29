@@ -1,0 +1,9 @@
+# KasShi Security Contact
+Contact: mailto:security@kasshi.io
+Expires: 2026-12-31T23:59:00.000Z
+Preferred-Languages: en
+Canonical: https://kasshi.io/.well-known/security.txt
+Policy: https://kasshi.io/legal
+
+# KasShi is a legitimate video platform powered by Kaspa cryptocurrency.
+# For security concerns, please contact security@kasshi.io
